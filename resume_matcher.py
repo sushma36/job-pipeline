@@ -1,7 +1,8 @@
 """
 =============================================================
-  RESUME MATCHER — Semantic scoring engine
-  Scores each job description against Sushma's resume
+  RESUME MATCHER — Sushma Dasari (Correct Resume)
+  Based on: SUSHMA_DASARI_Resume.pdf
+  Scores job descriptions against resume using weighted criteria
 =============================================================
 """
 
@@ -9,234 +10,260 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
-# ─── RESUME PROFILE ──────────────────────────────────────────────────────────
+# =============================================================
+#  SUSHMA'S RESUME PROFILE — Exact skills from correct resume
+# =============================================================
 
 RESUME = {
     "name": "Sushma Dasari",
     "years_experience": 5,
-    "current_level": "mid",   # junior / mid / senior
+    "current_level": "mid",
 
     "skills": [
-        # Core engineering
-        "data engineering", "etl", "elt", "data pipelines", "data lakes",
-        "data warehousing", "data modeling", "dimensional modeling",
-        "data vault 2.0", "star schema", "data lineage", "data governance",
-        "data quality", "data validation",
-        # Cloud
-        "aws", "s3", "redshift", "glue", "sagemaker", "iam", "cloudformation",
-        "gcp", "google cloud", "bigquery", "azure",
-        # Big data / streaming
-        "apache spark", "spark", "apache kafka", "kafka", "delta lake",
-        # Orchestration & ETL tools
-        "apache airflow", "airflow", "dbt", "fivetran", "informatica",
-        "aws glue",
-        # Databases
-        "snowflake", "postgresql", "mysql", "oracle", "mongodb",
-        "dynamodb", "microsoft sql server", "sql server",
-        # Programming
+        # ── Cloud Platforms ───────────────────────────────────
+        "aws", "amazon web services", "s3", "redshift", "glue",
+        "sagemaker", "aws sagemaker", "iam", "cloudformation",
+        "google cloud platform", "gcp", "azure",
+
+        # ── Data Warehousing & Big Data ───────────────────────
+        "snowflake", "amazon redshift", "google bigquery", "bigquery",
+        "apache spark", "spark", "apache kafka", "kafka",
+        "data warehouse", "data warehousing",
+
+        # ── ETL & Data Pipelines ──────────────────────────────
+        "apache airflow", "airflow", "dbt", "fivetran",
+        "aws glue", "informatica", "informatica powercenter",
+        "etl", "elt", "data pipelines", "data pipeline",
+        "etl pipelines", "elt pipelines",
+
+        # ── Programming & Scripting ───────────────────────────
         "python", "sql", "scala", "shell scripting",
-        # ML / AI
-        "mlops", "mlflow", "langchain", "llamaindex", "machine learning",
-        "feature engineering", "fraud detection", "generative ai",
-        # DevOps
+
+        # ── Databases ─────────────────────────────────────────
+        "microsoft sql server", "sql server", "postgresql",
+        "mysql", "oracle", "mongodb", "dynamodb",
+
+        # ── Data Modeling & Governance ────────────────────────
+        "dimensional modeling", "data vault 2.0", "data vault",
+        "star schema", "data lineage", "great expectations",
+        "data modeling", "data governance", "data quality",
+        "data validation",
+
+        # ── MLOps & AI ────────────────────────────────────────
+        "mlops", "mlflow", "langchain", "llamaindex",
+        "machine learning", "ml", "generative ai", "genai",
+        "ml-based", "ai", "llm",
+
+        # ── DevOps & Infrastructure ───────────────────────────
         "docker", "kubernetes", "terraform", "git", "jenkins",
-        # Visualization
+        "ci/cd", "infrastructure as code",
+
+        # ── Storage & Lake (from work experience) ─────────────
+        "delta lake", "data lake", "data lakehouse",
+
+        # ── Analytics & Visualization (from work exp) ─────────
         "tableau",
-        # Frameworks
-        "great expectations",
+
+        # ── Domain-specific (from work experience) ────────────
+        "healthcare", "claims", "fraud detection",
+        "feature engineering", "data migration",
+        "partitioning", "clustering", "data auditing",
     ],
 
+    # ── Core tech stack (highest weight) ─────────────────────
     "tech_stack": [
-        "python", "sql", "spark", "airflow", "kafka", "snowflake",
-        "aws", "redshift", "bigquery", "databricks", "delta lake",
-        "dbt", "glue", "sagemaker", "terraform", "docker", "kubernetes",
-        "scala", "fivetran", "oracle", "postgresql", "mongodb",
+        "python", "sql", "spark", "airflow", "kafka",
+        "snowflake", "aws", "redshift", "bigquery", "databricks",
+        "delta lake", "dbt", "glue", "sagemaker", "terraform",
+        "docker", "kubernetes", "scala", "fivetran", "oracle",
+        "postgresql", "mongodb", "mlflow", "langchain", "llamaindex",
+        "great expectations", "tableau", "gcp", "azure",
     ],
 
+    # ── Domains ───────────────────────────────────────────────
     "domains": [
-        "healthcare", "enterprise", "analytics", "cloud", "machine learning",
-        "fraud detection", "claims processing", "data migration",
+        "healthcare", "enterprise", "analytics", "cloud",
+        "machine learning", "fraud detection", "claims",
+        "fintech", "data platform", "ai",
     ],
 
     "education": {
         "degree": "master",
         "field": "computer science",
-        "levels_accepted": ["bachelor", "master", "phd"],
     },
 
     "level_keywords": {
-        "junior":     ["junior", "associate", "entry", "jr.", "entry-level", "new grad"],
-        "mid":        ["data engineer", "engineer ii", "engineer 2", "mid-level", "intermediate"],
-        "senior":     ["senior", "lead", "staff", "principal", "architect", "sr.", "sr "],
-        "management": ["manager", "director", "vp", "head of"],
+        "junior":     ["junior", "associate", "entry", "jr.", "entry-level",
+                       "new grad", "early career", "0-2 years", "1-2 years"],
+        "mid":        ["data engineer", "engineer ii", "engineer 2",
+                       "mid-level", "intermediate", "3-5 years", "2-4 years"],
+        "senior":     ["senior", "lead", "staff", "principal", "architect",
+                       "sr.", "sr ", "7+", "8+", "10+"],
+        "management": ["manager", "director", "vp ", "head of",
+                       "vice president", "chief"],
     },
 }
 
-# ─── SCORING WEIGHTS ─────────────────────────────────────────────────────────
+# =============================================================
+#  SCORING WEIGHTS
+# =============================================================
 
 WEIGHTS = {
-    "skills_overlap":       0.40,
-    "tech_stack_overlap":   0.25,
-    "experience_level":     0.15,
-    "domain_relevance":     0.10,
-    "education_req":        0.10,
+    "skills_overlap":     0.40,
+    "tech_stack_overlap": 0.25,
+    "experience_level":   0.15,
+    "domain_relevance":   0.10,
+    "education_req":      0.10,
 }
 
-# ─── DATA CLASSES ─────────────────────────────────────────────────────────────
+# =============================================================
+#  ROLE KEYWORDS — what titles to search & match
+# =============================================================
 
-@dataclass
-class MatchResult:
-    match_score: int
-    matched_skills: List[str]
-    missing_skills: List[str]
-    recommendation: str          # "Apply" or "Skip"
-    score_breakdown: dict = field(default_factory=dict)
+ROLE_KEYWORDS = [
+    # Core DE titles
+    "data engineer", "senior data engineer", "junior data engineer",
+    "associate data engineer", "staff data engineer", "lead data engineer",
+    # Adjacent titles
+    "analytics engineer", "etl engineer", "etl developer",
+    "data platform engineer", "data infrastructure engineer",
+    "data pipeline engineer", "cloud data engineer",
+    # ML-adjacent (Sushma has SageMaker, MLflow, LangChain)
+    "ml engineer", "machine learning engineer", "mlops engineer",
+    "ai data engineer",
+    # Warehouse/lake focused
+    "data warehouse engineer", "snowflake engineer", "bigquery engineer",
+]
 
 
-# ─── HELPERS ─────────────────────────────────────────────────────────────────
+# =============================================================
+#  HELPERS
+# =============================================================
 
 def _normalize(text: str) -> str:
-    """Lowercase, remove punctuation, collapse whitespace."""
     text = text.lower()
-    text = re.sub(r"[^\w\s]", " ", text)
+    text = re.sub(r"[^\w\s\./]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
-
-def _tokens(text: str) -> set:
-    return set(_normalize(text).split())
-
-
 def _phrase_in_text(phrase: str, text: str) -> bool:
-    """Check if a multi-word phrase appears in text."""
     return _normalize(phrase) in _normalize(text)
 
-
 def _count_matches(items: List[str], text: str) -> Tuple[List[str], int]:
-    """Return (matched_items, count) for items found in text."""
     matched = [item for item in items if _phrase_in_text(item, text)]
     return matched, len(matched)
 
 
-# ─── COMPONENT SCORERS ───────────────────────────────────────────────────────
+# =============================================================
+#  COMPONENT SCORERS
+# =============================================================
 
 def score_skills(jd: str) -> Tuple[float, List[str], List[str]]:
-    """
-    Skills overlap: 40% weight
-    Measures what % of resume skills appear in the job description,
-    and what % of JD-mentioned skills are on the resume.
-    """
+    """Skills overlap — 40% weight."""
     resume_skills = RESUME["skills"]
-    matched, n_matched = _count_matches(resume_skills, jd)
+    matched, n = _count_matches(resume_skills, jd)
 
-    # Bonus: high-value skills mentioned in JD that are ON resume
-    high_value = ["spark", "airflow", "kafka", "dbt", "snowflake",
-                  "databricks", "delta lake", "sagemaker"]
-    bonus_hits = sum(1 for s in high_value if _phrase_in_text(s, jd))
+    # Bonus for high-value skills present in JD
+    high_value = [
+        "spark", "airflow", "kafka", "dbt", "snowflake", "databricks",
+        "delta lake", "sagemaker", "langchain", "llamaindex", "mlflow",
+        "great expectations", "terraform", "kubernetes", "bigquery",
+    ]
+    bonus = sum(1 for s in high_value if _phrase_in_text(s, jd))
+    bonus_score = min(bonus * 0.025, 0.15)
 
-    # Base ratio
-    if not resume_skills:
-        return 0.0, [], []
+    # 30% coverage of resume skills = full score (skills list is broad)
+    ratio = n / max(len(resume_skills) * 0.30, 1)
+    raw   = min(ratio + bonus_score, 1.0)
 
-    ratio = n_matched / len(resume_skills)
-    bonus = min(bonus_hits * 0.03, 0.15)  # up to 15% bonus
-    raw = min(ratio + bonus, 1.0)
+    # Key skills to flag as missing
+    key_skills = [
+        "python", "sql", "spark", "airflow", "dbt", "snowflake",
+        "kafka", "aws", "bigquery", "terraform", "docker",
+        "kubernetes", "delta lake", "sagemaker", "mlflow",
+        "langchain", "great expectations", "fivetran",
+    ]
+    matched_lower = [m.lower() for m in matched]
+    missing = [s for s in key_skills if s not in matched_lower][:10]
 
-    missing = [s for s in resume_skills[:20] if s not in matched]  # top 20 for brevity
     return raw, matched, missing
 
 
 def score_tech_stack(jd: str) -> float:
-    """
-    Tech stack overlap: 25% weight
-    Focused check on the core 20-tech stack.
-    """
+    """Tech stack overlap — 25% weight."""
     stack = RESUME["tech_stack"]
-    _, n = _count_matches(stack, jd)
-    return min(n / max(len(stack) * 0.4, 1), 1.0)  # 40% coverage = full score
+    _, n  = _count_matches(stack, jd)
+    return min(n / max(len(stack) * 0.35, 1), 1.0)
 
 
 def score_experience_level(job_title: str, jd: str) -> float:
-    """
-    Experience level alignment: 15% weight
-    Penalizes senior/management roles heavily; neutral for mid/junior.
-    """
-    text = _normalize(f"{job_title} {jd[:500]}")   # title + top of JD
+    """Experience level fit — 15% weight. Sushma has 5 years."""
+    text = _normalize(f"{job_title} {jd[:800]}")
 
-    # Reject management
     for kw in RESUME["level_keywords"]["management"]:
         if kw in text:
-            return 0.1
+            return 0.05
 
-    # Senior: slight penalty (Sushma has 5yrs, can stretch but not ideal)
     for kw in RESUME["level_keywords"]["senior"]:
         if kw in text:
-            return 0.65
+            return 0.65   # 5 yrs — can apply to senior but not ideal
 
-    # Junior / associate: perfect fit
     for kw in RESUME["level_keywords"]["junior"]:
         if kw in text:
-            return 1.0
+            return 1.0    # perfect fit
 
-    # Mid-level default: good fit
-    return 0.9
+    return 0.90   # mid-level default — best fit
 
 
 def score_domain(jd: str) -> float:
-    """
-    Domain relevance: 10% weight
-    Healthcare, enterprise, analytics, cloud are strongest matches.
-    """
-    domains = RESUME["domains"]
-    high_value_domains = ["healthcare", "enterprise", "analytics", "cloud", "fintech"]
-    _, n_domain = _count_matches(domains, jd)
-    _, n_high = _count_matches(high_value_domains, jd)
+    """Domain relevance — 10% weight."""
+    domains    = RESUME["domains"]
+    high_value = ["healthcare", "fintech", "enterprise", "analytics", "cloud", "ai", "ml"]
+    _, n_d = _count_matches(domains, jd)
+    _, n_h = _count_matches(high_value, jd)
 
-    if n_high >= 2:
-        return 1.0
-    elif n_domain >= 2 or n_high >= 1:
-        return 0.75
-    elif n_domain == 1:
-        return 0.5
-    return 0.3   # data engineering is domain-agnostic; partial credit
+    if n_h >= 2:  return 1.0
+    if n_h >= 1:  return 0.80
+    if n_d >= 1:  return 0.60
+    return 0.35   # DE is domain-agnostic — always some credit
 
 
 def score_education(jd: str) -> float:
-    """
-    Education requirements: 10% weight
-    Sushma has MS CS — any role requiring ≤ MS gets full score.
-    """
+    """Education requirements — 10% weight. Sushma has MS CS."""
     jd_lower = _normalize(jd)
-    if "phd" in jd_lower or "ph.d" in jd_lower or "doctorate" in jd_lower:
-        return 0.3   # over-qualified requirement
-    if "master" in jd_lower or "m.s" in jd_lower or "m.sc" in jd_lower:
-        return 1.0   # exact match
+    if "phd" in jd_lower or "doctorate" in jd_lower:
+        return 0.40
+    if "master" in jd_lower or "m.s" in jd_lower or "graduate degree" in jd_lower:
+        return 1.0
     if "bachelor" in jd_lower or "b.s" in jd_lower or "undergraduate" in jd_lower:
-        return 1.0   # Sushma exceeds requirement
-    return 0.8   # no education requirement stated — probably fine
+        return 1.0
+    return 0.85   # no requirement stated
 
 
-# ─── MAIN MATCHER ────────────────────────────────────────────────────────────
+# =============================================================
+#  MATCH RESULT
+# =============================================================
+
+@dataclass
+class MatchResult:
+    match_score:     int
+    matched_skills:  str
+    missing_skills:  str
+    recommendation:  str
+    score_breakdown: dict = field(default_factory=dict)
+
 
 def match_job(job: dict) -> MatchResult:
-    """
-    Score a job dict against Sushma's resume.
-
-    job dict keys: job_title, job_description, [company_name, location, ...]
-    Returns MatchResult with score 0-100.
-    """
-    title = job.get("job_title", "")
-    jd    = job.get("job_description", "")
+    title    = job.get("job_title", "")
+    jd       = job.get("job_description", "")
     combined = f"{title} {jd}"
 
-    # ── Component scores (0.0 – 1.0 each)
-    s_skills, matched, missing  = score_skills(combined)
+    s_skills, matched, missing = score_skills(combined)
     s_tech                      = score_tech_stack(combined)
     s_level                     = score_experience_level(title, jd)
     s_domain                    = score_domain(combined)
     s_edu                       = score_education(jd)
 
-    # ── Weighted total
-    raw_score = (
+    raw = (
         s_skills  * WEIGHTS["skills_overlap"]      +
         s_tech    * WEIGHTS["tech_stack_overlap"]   +
         s_level   * WEIGHTS["experience_level"]     +
@@ -244,36 +271,32 @@ def match_job(job: dict) -> MatchResult:
         s_edu     * WEIGHTS["education_req"]
     )
 
-    final_score = round(raw_score * 100)
+    final = round(raw * 100)
 
-    # ── Format for Excel display
-    matched_display = ", ".join(sorted(set(matched[:15])))    # top 15
-    missing_display = ", ".join(sorted(set(missing[:10])))    # top 10 gaps
-
-    recommendation = "✅ Apply" if final_score >= 70 else "⛔ Skip"
+    matched_display = ", ".join(sorted(set(m.lower() for m in matched[:20])))
+    missing_display = ", ".join(missing[:10])
+    rec             = "✅ Apply" if final >= 70 else "⛔ Skip"
 
     return MatchResult(
-        match_score      = final_score,
-        matched_skills   = matched_display,
-        missing_skills   = missing_display,
-        recommendation   = recommendation,
-        score_breakdown  = {
-            "skills_overlap (40%)":     round(s_skills * 100),
-            "tech_stack (25%)":         round(s_tech * 100),
-            "experience_level (15%)":   round(s_level * 100),
-            "domain_relevance (10%)":   round(s_domain * 100),
-            "education_req (10%)":      round(s_edu * 100),
+        match_score     = final,
+        matched_skills  = matched_display,
+        missing_skills  = missing_display,
+        recommendation  = rec,
+        score_breakdown = {
+            "skills_overlap (40%)":   round(s_skills * 100),
+            "tech_stack (25%)":       round(s_tech * 100),
+            "experience_level (15%)": round(s_level * 100),
+            "domain_relevance (10%)": round(s_domain * 100),
+            "education_req (10%)":    round(s_edu * 100),
         }
     )
 
 
-# ─── PIPELINE UTILITIES ──────────────────────────────────────────────────────
+# =============================================================
+#  PIPELINE UTILITIES
+# =============================================================
 
 def filter_and_score(jobs: list, min_score: int = 70) -> list:
-    """
-    Run match_job on all jobs, attach scores, filter by min_score.
-    Returns enriched job dicts sorted by posting_date DESC, match_score DESC.
-    """
     scored = []
     for job in jobs:
         result = match_job(job)
@@ -283,7 +306,6 @@ def filter_and_score(jobs: list, min_score: int = 70) -> list:
             job["missing_skills"] = result.missing_skills
             job["recommendation"] = result.recommendation
             scored.append(job)
-
     scored.sort(
         key=lambda j: (j.get("posting_date", ""), j["match_score"]),
         reverse=True
@@ -292,133 +314,70 @@ def filter_and_score(jobs: list, min_score: int = 70) -> list:
 
 
 def deduplicate(jobs: list) -> list:
-    """
-    Remove duplicate postings using company_name + job_title as key.
-    Keeps the record with the highest match_score.
-    """
+    def _norm(s): return re.sub(r"\s+", "", s.lower().strip())
     seen = {}
     for job in jobs:
-        company = _normalize(job.get("company_name", ""))
-        title   = _normalize(job.get("job_title", ""))
-        key     = f"{company}|{title}"
-
+        key = _norm(job.get("company_name", "")) + "|" + _norm(job.get("job_title", ""))
         if key not in seen or job["match_score"] > seen[key]["match_score"]:
             seen[key] = job
-
     return list(seen.values())
 
 
-# ─── DEMO / TEST ─────────────────────────────────────────────────────────────
-
-SAMPLE_JOBS = [
-    {
-        "job_title": "Data Engineer",
-        "company_name": "Stripe",
-        "location": "San Francisco, CA (Remote OK)",
-        "remote_or_hybrid": "Hybrid",
-        "posting_date": "2025-01-15",
-        "salary": "$140,000 - $180,000",
-        "job_url": "https://stripe.com/jobs/listing/data-engineer/12345",
-        "platform_name": "LinkedIn",
-        "job_description": """
-            We are looking for a Data Engineer with 3-5 years of experience to join our
-            Data Platform team. You will build and maintain scalable data pipelines using
-            Apache Spark, Apache Airflow, and dbt. Experience with Python, SQL, and AWS
-            (S3, Redshift, Glue) is required. Familiarity with Kafka for real-time streaming
-            and Snowflake for data warehousing is a plus. You will work with data scientists
-            to build ML feature pipelines and with analytics engineers to power our dashboards.
-            We use Docker and Kubernetes for deployment, Terraform for infra, and Git/Jenkins
-            for CI/CD. Healthcare or fintech domain experience appreciated. Bachelor's or
-            Master's in Computer Science preferred.
-        """,
-    },
-    {
-        "job_title": "Senior Data Engineer",
-        "company_name": "Google",
-        "location": "New York, NY",
-        "remote_or_hybrid": "Onsite",
-        "posting_date": "2025-01-15",
-        "salary": "$200,000 - $250,000",
-        "job_url": "https://careers.google.com/jobs/results/12345",
-        "platform_name": "Indeed",
-        "job_description": """
-            Senior Data Engineer needed with 7+ years of experience. Must lead a team
-            of 5 engineers. Deep expertise in BigQuery, Apache Spark, Kafka, and GCP.
-            Python and Scala required. Experience with Dataflow, Pub/Sub, and Cloud
-            Composer. Strong background in data modeling, data governance, and
-            enterprise-scale data lakes. Must have experience leading architecture
-            decisions. PhD preferred. Managing stakeholder relationships at VP level.
-        """,
-    },
-    {
-        "job_title": "Analytics Engineer",
-        "company_name": "Figma",
-        "location": "Remote",
-        "remote_or_hybrid": "Remote",
-        "posting_date": "2025-01-14",
-        "salary": "$120,000 - $160,000",
-        "job_url": "https://figma.com/careers/analytics-engineer",
-        "platform_name": "Wellfound",
-        "job_description": """
-            Analytics Engineer to own our dbt transformation layer and Snowflake data
-            warehouse. Write SQL and Python to build reliable data models. Partner with
-            data analysts and business stakeholders to deliver dashboards in Tableau.
-            Experience with Fivetran for data ingestion, Great Expectations for data
-            quality, and Airflow for orchestration. AWS experience a plus.
-            2-4 years experience. Bachelor's degree in CS, Engineering, or related field.
-        """,
-    },
-    {
-        "job_title": "Junior Data Engineer",
-        "company_name": "Acme Corp",
-        "location": "Austin, TX",
-        "remote_or_hybrid": "Hybrid",
-        "posting_date": "2025-01-15",
-        "salary": "$80,000",
-        "job_url": "https://acmecorp.jobs/junior-data-engineer",
-        "platform_name": "SimplyHired",
-        "job_description": """
-            Entry level data engineer. Build ETL pipelines using Python and SQL.
-            Work with PostgreSQL and MySQL databases. Learn AWS tools on the job.
-            0-2 years experience. Bachelor's required. No Spark or Kafka needed.
-            Focus on batch processing with basic Airflow DAGs.
-        """,
-    },
-    {
-        "job_title": "Data Engineer",        # duplicate of Stripe above on different platform
-        "company_name": "Stripe",
-        "location": "San Francisco, CA",
-        "remote_or_hybrid": "Remote",
-        "posting_date": "2025-01-15",
-        "salary": "$140,000 - $180,000",
-        "job_url": "https://stripe.com/jobs/listing/data-engineer/99999",
-        "platform_name": "RemoteOK",
-        "job_description": """
-            Data Engineer to build scalable data pipelines using Spark, Airflow, dbt.
-            Python, SQL, AWS (S3, Redshift, Glue). Kafka streaming. Snowflake.
-            Docker, Kubernetes, Terraform. ML feature pipelines with SageMaker.
-        """,
-    },
-]
-
+# =============================================================
+#  QUICK TEST
+# =============================================================
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("  RESUME MATCHER — TEST RUN")
-    print("=" * 60)
+    test_jobs = [
+        {
+            "job_title": "Data Engineer",
+            "company_name": "Stripe",
+            "job_description": """Build scalable data pipelines using Apache Spark, Airflow,
+            dbt, Snowflake, Python, SQL. AWS (S3, Redshift, Glue, SageMaker). Kafka streaming.
+            Delta Lake. MLflow. Docker, Kubernetes, Terraform, Git. Great Expectations for data
+            quality. LangChain for LLM pipelines. Healthcare domain. MS Computer Science. 3-5 yrs.""",
+            "platform_name": "LinkedIn", "location": "Remote",
+            "posting_date": "2026-03-14", "job_url": "https://stripe.com/jobs/1",
+            "salary": "$150k-$190k",
+        },
+        {
+            "job_title": "Analytics Engineer",
+            "company_name": "Figma",
+            "job_description": """dbt, Snowflake, Python, SQL, Fivetran, Airflow.
+            Great Expectations, data lineage, Tableau. AWS. 2-4 years. BS/MS.""",
+            "platform_name": "Lever ATS", "location": "Remote",
+            "posting_date": "2026-03-14", "job_url": "https://figma.com/jobs/1",
+            "salary": "$120k-$150k",
+        },
+        {
+            "job_title": "ETL Engineer",
+            "company_name": "JPMorgan",
+            "job_description": """ETL pipelines Python SQL Informatica PowerCenter Snowflake
+            Redshift Kafka AWS Glue Data Vault 2.0 Star Schema Dimensional Modeling Git Jenkins
+            Docker financial services 3-6 years BS required.""",
+            "platform_name": "Workday ATS", "location": "New York",
+            "posting_date": "2026-03-14", "job_url": "https://jpmorgan.com/jobs/1",
+            "salary": "$130k-$160k",
+        },
+        {
+            "job_title": "Senior Data Engineer",
+            "company_name": "Amazon",
+            "job_description": """Senior DE leading team of 8. 7+ years required. Spark Kafka
+            Redshift DynamoDB Glue Python Scala. Architecture decisions. PhD preferred.
+            VP level stakeholder management.""",
+            "platform_name": "Indeed", "location": "Seattle",
+            "posting_date": "2026-03-14", "job_url": "https://amazon.com/jobs/1",
+            "salary": "$200k+",
+        },
+    ]
 
-    for job in SAMPLE_JOBS:
-        result = match_job(job)
-        print(f"\n📌 {job['job_title']} @ {job['company_name']} [{job['platform_name']}]")
-        print(f"   Match Score : {result.match_score}/100  → {result.recommendation}")
-        print(f"   Matched     : {result.matched_skills[:80]}...")
-        print(f"   Missing     : {result.missing_skills}")
-        print(f"   Breakdown   : {result.score_breakdown}")
-
-    print("\n" + "=" * 60)
-    print("  AFTER FILTER (≥70) + DEDUP")
-    print("=" * 60)
-    filtered = filter_and_score(SAMPLE_JOBS, min_score=70)
-    deduped  = deduplicate(filtered)
-    for j in deduped:
-        print(f"  ✅ {j['job_title']:35s} | {j['company_name']:20s} | Score: {j['match_score']}")
+    print("=" * 65)
+    print("  RESUME MATCHER TEST — Sushma Dasari (Correct Resume)")
+    print("=" * 65)
+    for job in test_jobs:
+        r = match_job(job)
+        print(f"\n📌 {job['job_title']:35s} @ {job['company_name']}")
+        print(f"   Score      : {r.match_score}/100  →  {r.recommendation}")
+        print(f"   Matched    : {r.matched_skills[:100]}")
+        print(f"   Missing    : {r.missing_skills}")
+        print(f"   Breakdown  : {r.score_breakdown}")
