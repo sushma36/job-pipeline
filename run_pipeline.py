@@ -362,7 +362,7 @@ ACTOR_TASKS = [
                 }
             """,
             "maxRequestsPerCrawl": 60,
-            "useChrome": true,
+            "useChrome": True,
         },
         "field_map": {},
     },
@@ -408,7 +408,7 @@ ACTOR_TASKS = [
                 }
             """,
             "maxRequestsPerCrawl": 50,
-            "useChrome": true,
+            "useChrome": True,
         },
         "field_map": {},
     },
@@ -552,7 +552,7 @@ ACTOR_TASKS = [
                 }
             """,
             "maxRequestsPerCrawl": 5,
-            "useChrome": true,
+            "useChrome": True,
         },
         "field_map": {},
     },
@@ -682,7 +682,7 @@ ACTOR_TASKS = [
                 }
             """,
             "maxRequestsPerCrawl": 5,
-            "useChrome": true,
+            "useChrome": True,
         },
         "field_map": {},
     },
