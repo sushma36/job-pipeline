@@ -381,36 +381,6 @@ ACTOR_TASKS = [
     },
 
 
-    # ── LINKEDIN (Premium cookie auth) ────────────────────────
-    {
-        "name":          "linkedin",
-        "actor_id":      "bebity/linkedin-jobs-scraper",
-        "platform_name": "LinkedIn",
-        "input": {
-            "queries": [
-                "Data Engineer",
-                "Analytics Engineer",
-                "ETL Engineer",
-                "Data Platform Engineer",
-                "ML Engineer",
-            ],
-            "location":   "United States",
-            "datePosted": "Past 24 hours",
-            "maxResults": 100,
-            "cookie":     [{"name": "li_at", "value": LINKEDIN_COOKIE}],
-        },
-        "field_map": {
-            "title":       "job_title",
-            "companyName": "company_name",
-            "location":    "location",
-            "workType":    "remote_or_hybrid",
-            "salary":      "salary",
-            "postedAt":    "posting_date",
-            "description": "job_description",
-            "jobUrl":      "job_url",
-        },
-    },
-
     # ── 2. MYVISAJOBS ─────────────────────────────────────────
     {
         "name":          "myvisajobs",
@@ -492,6 +462,59 @@ ACTOR_TASKS = [
 # =============================================================
 #  ACTOR RUNNER
 # =============================================================
+
+
+def run_linkedin(client) -> list:
+    """LinkedIn scraper using Premium cookie authentication."""
+    cookie = os.environ.get("LINKEDIN_COOKIE", "")
+    if not cookie:
+        print(f"  ▶ {'LinkedIn':25s}  (skipped — LINKEDIN_COOKIE not set)")
+        return []
+    print(f"  ▶ {'LinkedIn':25s}  (bebity/linkedin-jobs-scraper + Premium cookie)")
+    try:
+        run = client.actor("bebity/linkedin-jobs-scraper").call(
+            run_input={
+                "queries":    ["Data Engineer", "Analytics Engineer",
+                               "ETL Engineer", "Data Platform Engineer", "ML Engineer"],
+                "location":   "United States",
+                "datePosted": "Past 24 hours",
+                "maxResults": 100,
+                "cookie":     [{"name": "li_at", "value": cookie}],
+            },
+            timeout_secs=300,
+        )
+        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        jobs  = []
+        skipped_title = skipped_date = 0
+        for item in items:
+            job = {
+                "job_title":       item.get("title", ""),
+                "company_name":    item.get("companyName", ""),
+                "location":        item.get("location", ""),
+                "remote_or_hybrid": item.get("workType", ""),
+                "salary":          item.get("salary", ""),
+                "posting_date":    item.get("postedAt", ""),
+                "job_description": item.get("description", ""),
+                "job_url":         item.get("jobUrl", ""),
+                "platform_name":   "LinkedIn",
+            }
+            if not job["job_title"]:
+                continue
+            if not title_matches(job["job_title"]):
+                skipped_title += 1
+                continue
+            if not within_lookback(job["posting_date"], LOOKBACK_HRS):
+                skipped_date += 1
+                continue
+            jobs.append(job)
+        print(f"    ↳ {len(items):4d} raw  |  kept: {len(jobs)}  |  wrong title: {skipped_title}  |  too old: {skipped_date}")
+        if jobs:
+            print(f"    ↳ sample: {[j['job_title'] for j in jobs[:2]]}")
+        return jobs
+    except Exception as e:
+        print(f"    ⚠️  LinkedIn FAILED: {e}")
+        return []
+
 
 def run_actor(client, cfg: dict) -> List[dict]:
     name = cfg["platform_name"]
@@ -710,6 +733,7 @@ def run_pipeline():
     # ── Step 1b: Apify actor scrapers ─────────────────────────
     print(f"\n📡 Step 1b: Apify actor scrapers...")
     client = ApifyClient(APIFY_TOKEN)
+    all_jobs.extend(run_linkedin(client))
     for cfg in ACTOR_TASKS:
         all_jobs.extend(run_actor(client, cfg))
 
