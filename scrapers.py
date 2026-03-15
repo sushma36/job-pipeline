@@ -311,7 +311,7 @@ def scrape_remotive(hours: int = 48) -> List[dict]:
         return []
 
     results = []
-    kept = skip_title = skip_age = 0
+    kept = skip_title = skip_age = skip_loc = 0
 
     for j in r.json().get("jobs", []):
         if not title_matches(j.get("title", "")):
@@ -320,11 +320,15 @@ def scrape_remotive(hours: int = 48) -> List[dict]:
         if not within_lookback(j.get("publication_date", ""), hours):
             skip_age += 1
             continue
+        loc = j.get("candidate_required_location", "Remote") or "Remote"
+        if not is_us_or_remote(loc):
+            skip_loc += 1
+            continue
         kept += 1
         results.append(job(
             j.get("title", ""),
             j.get("company_name", ""),
-            j.get("candidate_required_location", "Remote"),
+            loc,
             "Remote",
             j.get("publication_date", ""),
             j.get("description", ""),
@@ -333,7 +337,7 @@ def scrape_remotive(hours: int = 48) -> List[dict]:
             "Remotive",
         ))
 
-    print(f"    ↳ kept={kept} | skip_title={skip_title} | skip_age={skip_age}")
+    print(f"    ↳ kept={kept} | skip_title={skip_title} | skip_age={skip_age} | skip_loc={skip_loc}")
     return results
 
 
@@ -365,6 +369,9 @@ def scrape_remoteok(hours: int = 48) -> List[dict]:
                 continue
             if not within_lookback(j.get("date", ""), hours):
                 skip_age += 1
+                continue
+            loc = j.get("location", "Remote")
+            if not is_us_or_remote(loc):
                 continue
             url = j.get("url", "")
             if not url.startswith("http"):
@@ -475,6 +482,9 @@ def scrape_jobicy(hours: int = 48) -> List[dict]:
             if not within_lookback(j.get("pubDate", ""), hours):
                 skip_age += 1
                 continue
+            loc = j.get("jobGeo", "Remote") or "Remote"
+            if not is_us_or_remote(loc):
+                continue
             url = j.get("url", "")
             if url in seen_urls:
                 continue
@@ -483,7 +493,7 @@ def scrape_jobicy(hours: int = 48) -> List[dict]:
             results.append(job(
                 j.get("jobTitle", ""),
                 j.get("companyName", ""),
-                j.get("jobGeo", "Remote"),
+                loc,
                 "Remote",
                 j.get("pubDate", ""),
                 j.get("jobDescription", ""),
