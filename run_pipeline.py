@@ -4,7 +4,6 @@
 
   FIXES FROM v5:
   - requests imported ONCE at top, used everywhere (no re-import)
-  - LinkedIn REMOVED (requires paid Apify plan)
   - Indeed input fixed: uses 'position' field correctly
   - Added Jobicy public API (100% free, no auth)
   - Added Adzuna public API (free, 50 req/month)  
@@ -42,7 +41,6 @@ GMAIL_USER     = os.environ.get("GMAIL_USER",     "sushmads698@gmail.com")
 GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS", "YOUR_APP_PASSWORD_HERE")
 NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL",   "sushmads698@gmail.com")
 RUN_SLOT         = os.environ.get("RUN_SLOT",         "")
-LINKEDIN_COOKIE  = os.environ.get("LINKEDIN_COOKIE",  "")
 
 OUTPUT_PATH  = f"data_engineer_jobs_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
 MIN_SCORE    = 60
@@ -59,11 +57,19 @@ ROLE_KEYWORDS = [
 ]
 
 GREENHOUSE_COMPANIES = [
+    # Data/Analytics companies
     "stripe", "airbnb", "doordash", "coinbase", "notion", "figma",
     "plaid", "brex", "chime", "gusto", "rippling", "databricks",
     "fivetran", "dbt-labs", "astronomer", "airbyte", "census",
     "hightouch", "anomalo", "monte-carlo", "robinhood", "scale-ai",
     "datadog", "cloudflare", "vercel", "retool", "benchling",
+    # More US tech companies
+    "lyft", "reddit", "duolingo", "discord", "hubspot", "zendesk",
+    "twilio", "okta", "hashicorp", "elastic", "mongodb-inc",
+    "cockroachdb", "airtable", "zapier", "segment", "amplitude",
+    "mixpanel", "heap", "iteratively", "rudderstack",
+    # Healthcare (good match for Sushma)
+    "tempus", "flatiron", "veeva", "health-gorilla", "commure",
 ]
 
 LEVER_COMPANIES = [
@@ -107,6 +113,55 @@ def make_job(title, company, location, remote, date, description, salary, url, p
     }
 
 
+
+# US states, territories and keywords for location filtering
+US_LOCATIONS = {
+    "united states", "usa", "u.s.a", "u.s.", "remote", "anywhere",
+    "worldwide", "global", "us only", "us-only", "north america",
+    # States
+    "alabama","alaska","arizona","arkansas","california","colorado",
+    "connecticut","delaware","florida","georgia","hawaii","idaho",
+    "illinois","indiana","iowa","kansas","kentucky","louisiana","maine",
+    "maryland","massachusetts","michigan","minnesota","mississippi",
+    "missouri","montana","nebraska","nevada","new hampshire","new jersey",
+    "new mexico","new york","north carolina","north dakota","ohio",
+    "oklahoma","oregon","pennsylvania","rhode island","south carolina",
+    "south dakota","tennessee","texas","utah","vermont","virginia",
+    "washington","west virginia","wisconsin","wyoming",
+    # Common city abbreviations
+    "ny", "nyc", "la", "sf", "dc", "atl", "chi", "sea", "bos", "aus",
+    # State abbreviations
+    "al","ak","az","ar","ca","co","ct","de","fl","ga","hi","id","il",
+    "in","ia","ks","ky","la","me","md","ma","mi","mn","ms","mo","mt",
+    "ne","nv","nh","nj","nm","nc","nd","oh","ok","or","pa","ri","sc",
+    "sd","tn","tx","ut","vt","va","wa","wv","wi","wy",
+}
+
+def is_us_or_remote(location: str, description: str = "") -> bool:
+    """Return True if job is in the US, remote, or location is unspecified."""
+    if not location:
+        return True   # no location = keep it
+    loc_lower = location.lower()
+    # Explicit non-US countries to reject
+    non_us = [
+        "india", "bengaluru", "bangalore", "hyderabad", "mumbai", "delhi",
+        "chennai", "pune", "kolkata", "canada", "toronto", "vancouver",
+        "uk", "united kingdom", "london", "england", "germany", "berlin",
+        "france", "paris", "australia", "sydney", "melbourne", "singapore",
+        "japan", "china", "brazil", "mexico", "netherlands", "amsterdam",
+        "ireland", "dublin", "poland", "spain", "madrid", "italy", "rome",
+        "sweden", "stockholm", "denmark", "norway", "finland",
+    ]
+    for country in non_us:
+        if country in loc_lower:
+            return False
+    # Check if it matches a US location
+    for us_loc in US_LOCATIONS:
+        if us_loc in loc_lower:
+            return True
+    # If location has no clear signal, keep it (benefit of the doubt)
+    return True
+
 def fetch_json(url, timeout=20):
     try:
         r = requests.get(url, timeout=timeout,
@@ -148,6 +203,8 @@ def scrape_greenhouse() -> List[dict]:
             if not within_lookback(j.get("updated_at", ""), LOOKBACK_HRS):
                 continue
             loc = j.get("location", {}).get("name", "") if j.get("location") else ""
+            if not is_us_or_remote(loc):
+                continue   # skip non-US Greenhouse jobs
             jobs.append(make_job(
                 j.get("title", ""),
                 company.replace("-", " ").title(),
@@ -464,57 +521,6 @@ ACTOR_TASKS = [
 # =============================================================
 
 
-def run_linkedin(client) -> list:
-    """LinkedIn scraper using Premium cookie authentication."""
-    cookie = os.environ.get("LINKEDIN_COOKIE", "")
-    if not cookie:
-        print(f"  ▶ {'LinkedIn':25s}  (skipped — LINKEDIN_COOKIE not set)")
-        return []
-    print(f"  ▶ {'LinkedIn':25s}  (bebity/linkedin-jobs-scraper + Premium cookie)")
-    try:
-        run = client.actor("bebity/linkedin-jobs-scraper").call(
-            run_input={
-                "queries":    ["Data Engineer", "Analytics Engineer",
-                               "ETL Engineer", "Data Platform Engineer", "ML Engineer"],
-                "location":   "United States",
-                "datePosted": "Past 24 hours",
-                "maxResults": 100,
-                "cookie":     [{"name": "li_at", "value": cookie}],
-            },
-            timeout_secs=300,
-        )
-        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
-        jobs  = []
-        skipped_title = skipped_date = 0
-        for item in items:
-            job = {
-                "job_title":       item.get("title", ""),
-                "company_name":    item.get("companyName", ""),
-                "location":        item.get("location", ""),
-                "remote_or_hybrid": item.get("workType", ""),
-                "salary":          item.get("salary", ""),
-                "posting_date":    item.get("postedAt", ""),
-                "job_description": item.get("description", ""),
-                "job_url":         item.get("jobUrl", ""),
-                "platform_name":   "LinkedIn",
-            }
-            if not job["job_title"]:
-                continue
-            if not title_matches(job["job_title"]):
-                skipped_title += 1
-                continue
-            if not within_lookback(job["posting_date"], LOOKBACK_HRS):
-                skipped_date += 1
-                continue
-            jobs.append(job)
-        print(f"    ↳ {len(items):4d} raw  |  kept: {len(jobs)}  |  wrong title: {skipped_title}  |  too old: {skipped_date}")
-        if jobs:
-            print(f"    ↳ sample: {[j['job_title'] for j in jobs[:2]]}")
-        return jobs
-    except Exception as e:
-        print(f"    ⚠️  LinkedIn FAILED: {e}")
-        return []
-
 
 def run_actor(client, cfg: dict) -> List[dict]:
     name = cfg["platform_name"]
@@ -543,6 +549,8 @@ def run_actor(client, cfg: dict) -> List[dict]:
             if not within_lookback(job["posting_date"], LOOKBACK_HRS):
                 skipped_date += 1
                 continue
+            if not is_us_or_remote(job.get("location", ""), job.get("job_description", "")):
+                continue   # skip non-US jobs
             jobs.append(job)
         print(f"    ↳ {len(items):4d} raw  |  kept: {len(jobs)}  |  wrong title: {skipped_title}  |  too old: {skipped_date}")
         if jobs:
@@ -733,7 +741,6 @@ def run_pipeline():
     # ── Step 1b: Apify actor scrapers ─────────────────────────
     print(f"\n📡 Step 1b: Apify actor scrapers...")
     client = ApifyClient(APIFY_TOKEN)
-    all_jobs.extend(run_linkedin(client))
     for cfg in ACTOR_TASKS:
         all_jobs.extend(run_actor(client, cfg))
 
