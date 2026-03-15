@@ -1,19 +1,26 @@
 """
-scrapers.py — All job scrapers for Data Engineer pipeline
-=========================================================
-Strategy per source:
-  - ATS (Greenhouse, Lever): NO date filter — API only returns open jobs
-  - Job boards (RemoteOK, WWR, Jobicy, Remotive): 7-day lookback
-    because boards keep jobs listed for weeks; 24hr = almost always 0
-  - Apify (Indeed, MyVisaJobs): 24hr filter via actor config
+scrapers.py
+===========
+Rules:
+  - Greenhouse / Lever : NO date filter. Their APIs return only currently
+    open positions. We filter by created_at in post-processing.
+  - Job boards (RemoteOK, WWR, Remotive, Jobicy): 24-hr filter.
+  - Apify (Indeed, MyVisaJobs): 24-hr filter via actor param.
+  - All sources: US-or-Remote location filter, DE title filter.
+
+Each scraper prints one diagnostic line:
+  source | raw | kept | skip_title | skip_loc | skip_age
 """
 
 import re, time
 import requests
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
+# ---------------------------------------------------------------------------
+# HTTP
+# ---------------------------------------------------------------------------
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -21,70 +28,125 @@ HEADERS = {
         "Chrome/122.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json, text/html, */*",
-    "Accept-Language": "en-US,en;q=0.9",
 }
 
-# ── ATS company lists ─────────────────────────────────────────
-GREENHOUSE_COMPANIES = [
-    # Data tooling companies — highest DE job density
-    "databricks", "dbt-labs", "fivetran", "airbyte", "astronomer",
-    "hightouch", "census", "anomalo", "monte-carlo", "rudderstack",
-    "lightdash", "preset", "cube-dev", "datafold", "re-data",
-    # Tech companies with large DE teams
-    "stripe", "airbnb", "doordash", "coinbase", "notion", "figma",
-    "plaid", "brex", "chime", "gusto", "rippling", "robinhood",
-    "scale-ai", "datadog", "cloudflare", "retool", "benchling",
-    "lyft", "reddit", "duolingo", "discord", "hubspot", "zendesk",
-    "okta", "elastic", "airtable", "zapier", "segment", "amplitude",
-    # Healthcare (Sushma's domain)
-    "tempus", "flatiron", "veeva", "commure",
-    # Fintech
-    "carta", "faire", "brex", "chime",
-]
+def _get(url: str, timeout: int = 20,
+         params: dict = None) -> Optional[requests.Response]:
+    for attempt in range(3):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=timeout, params=params)
+            if r.status_code == 200:
+                return r
+            if r.status_code == 429:
+                time.sleep(6 * (attempt + 1))
+        except Exception:
+            time.sleep(3)
+    return None
 
-LEVER_COMPANIES = [
-    "confluent", "starburst", "clickhouse", "benchling",
-    "samsara", "podium", "gladly", "cohere", "weights-biases",
-    "imply", "acryl-data", "atlan",
-]
+# ---------------------------------------------------------------------------
+# Date parsing — converts ANY timestamp format to UTC-aware datetime
+# ---------------------------------------------------------------------------
+def _parse_dt(raw) -> Optional[datetime]:
+    """Parse any date string / epoch-ms / relative string → UTC datetime."""
+    if not raw:
+        return None
+    raw = str(raw).strip()
 
-# ── Title matching ─────────────────────────────────────────────
-_DE_KEYWORDS = [
-    "data engineer",
-    "analytics engineer",
-    "etl engineer",
-    "etl developer",
-    "data platform engineer",
-    "big data engineer",
-    "cloud data engineer",
-    "data infrastructure engineer",
-    "data pipeline engineer",
+    # epoch milliseconds (Lever uses this)
+    if re.fullmatch(r"\d{13}", raw):
+        try:
+            return datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc)
+        except Exception:
+            pass
+
+    # epoch seconds
+    if re.fullmatch(r"\d{10}", raw):
+        try:
+            return datetime.fromtimestamp(int(raw), tz=timezone.utc)
+        except Exception:
+            pass
+
+    # relative timestamps: "1 day ago", "2 hours ago", "Just posted", etc.
+    rel = raw.lower()
+    now = datetime.now(tz=timezone.utc)
+    m = re.search(r"(\d+)\s*(second|minute|hour|day|week|month)", rel)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        delta_map = {
+            "second": timedelta(seconds=n),
+            "minute": timedelta(minutes=n),
+            "hour":   timedelta(hours=n),
+            "day":    timedelta(days=n),
+            "week":   timedelta(weeks=n),
+            "month":  timedelta(days=n * 30),
+        }
+        return now - delta_map[unit]
+    if any(w in rel for w in ("just posted", "today", "just now")):
+        return now
+
+    # ISO / RFC strings
+    try:
+        from dateutil import parser as dp
+        dt = dp.parse(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def is_within_hours(raw_date, hours: int) -> bool:
+    """
+    Return True if the job was posted within `hours`.
+    If date is missing/unparseable → True (keep the job).
+    """
+    if not raw_date:
+        return True
+    dt = _parse_dt(raw_date)
+    if dt is None:
+        return True
+    now = datetime.now(tz=timezone.utc)
+    return (now - dt) <= timedelta(hours=hours)
+
+
+def fmt_date(raw) -> str:
+    """Return ISO date string, or raw string if unparseable."""
+    dt = _parse_dt(raw)
+    return dt.strftime("%Y-%m-%d %H:%M UTC") if dt else str(raw or "")
+
+# ---------------------------------------------------------------------------
+# Title filter
+# ---------------------------------------------------------------------------
+_DE_TITLES = [
+    "data engineer", "analytics engineer", "etl engineer", "etl developer",
+    "data platform engineer", "big data engineer", "cloud data engineer",
+    "data infrastructure engineer", "data pipeline engineer",
     "data warehouse engineer",
 ]
-
 _DISQUALIFY = [
-    "phd", "research scientist", "data scientist", "machine learning engineer",
-    "ml engineer", "software engineer", "frontend", "backend", "security",
-    "devops", "site reliability", "product manager", "data analyst",
-    "business intelligence", "ai engineer", "research engineer",
-    "deep learning", "computer vision", "nlp engineer",
+    "phd", "research scientist", "data scientist",
+    "machine learning engineer", "ml engineer",
+    "software engineer", "frontend", "backend",
+    "security engineer", "devops", "site reliability",
+    "product manager", "data analyst", "business intelligence",
+    "ai engineer", "research engineer", "deep learning",
+    "computer vision", "nlp engineer",
 ]
 
-def title_matches(title: str) -> bool:
+def _title_ok(title: str) -> bool:
     t = title.lower()
-    if not any(kw in t for kw in _DE_KEYWORDS):
-        return False
-    if any(dq in t for dq in _DISQUALIFY):
-        return False
-    return True
+    return (any(kw in t for kw in _DE_TITLES) and
+            not any(dq in t for dq in _DISQUALIFY))
 
-# ── Location filter (allowlist) ────────────────────────────────
-_REMOTE_SIGNALS = [
+# ---------------------------------------------------------------------------
+# Location filter — US or Remote allowlist
+# ---------------------------------------------------------------------------
+_REMOTE = [
     "remote", "anywhere", "worldwide", "work from home", "wfh",
-    "distributed", "us only", "usa only", "north america", "global",
-    "flexible", "united states", ", usa", " usa", "u.s.a",
+    "distributed", "us only", "usa only", "north america",
+    "global", "flexible", "united states", "u.s.a",
 ]
-_US_STATES = [
+_STATES = [
     "alabama","alaska","arizona","arkansas","california","colorado",
     "connecticut","delaware","florida","georgia","hawaii","idaho",
     "illinois","indiana","iowa","kansas","kentucky","louisiana","maine",
@@ -95,13 +157,13 @@ _US_STATES = [
     "south dakota","tennessee","texas","utah","vermont","virginia",
     "washington","west virginia","wisconsin","wyoming","district of columbia",
 ]
-_STATE_ABBREVS = {
+_ABBREVS = {
     "al","ak","az","ar","ca","co","ct","de","fl","ga","hi","id","il",
     "in","ia","ks","ky","la","me","md","ma","mi","mn","ms","mo","mt",
     "ne","nv","nh","nj","nm","ny","nc","nd","oh","ok","or","pa","ri",
     "sc","sd","tn","tx","ut","vt","va","wa","wv","wi","wy","dc",
 }
-_US_CITIES = [
+_CITIES = [
     "new york","san francisco","seattle","chicago","boston","austin",
     "denver","atlanta","los angeles","washington","portland","miami",
     "dallas","houston","minneapolis","philadelphia","phoenix","san diego",
@@ -109,122 +171,135 @@ _US_CITIES = [
     "charlotte","indianapolis","columbus","memphis","louisville",
     "richmond","hartford","pittsburgh","cincinnati","kansas city",
     "new orleans","las vegas","tampa","orlando","jacksonville",
-    "san antonio","fort worth","el paso","tucson","fresno","sacramento",
+    "san antonio","fort worth","tucson","fresno","sacramento",
 ]
 
-def is_us_or_remote(location: str) -> bool:
+def _loc_ok(location: str) -> bool:
     if not location or not location.strip():
-        return True
+        return True          # blank = remote / not specified → keep
     loc = location.lower().strip()
-    for sig in _REMOTE_SIGNALS:
-        if sig in loc:
-            return True
-    for state in _US_STATES:
-        if state in loc:
-            return True
-    tokens = set(re.split(r'[\s,./\-]+', loc))
-    if tokens & _STATE_ABBREVS:
+    if any(sig in loc for sig in _REMOTE):
         return True
-    for city in _US_CITIES:
-        if city in loc:
-            return True
+    if ", usa" in loc or " usa" in loc:
+        return True
+    if any(s in loc for s in _STATES):
+        return True
+    tokens = set(re.split(r"[\s,./\-]+", loc))
+    if tokens & _ABBREVS:
+        return True
+    if any(c in loc for c in _CITIES):
+        return True
     return False
 
-# ── Date filter ────────────────────────────────────────────────
-def within_lookback(date_str: str, hours: int) -> bool:
-    if not date_str or not str(date_str).strip():
-        return True
-    try:
-        from dateutil import parser as dp
-        from datetime import timezone
-        dt  = dp.parse(str(date_str))
-        now = datetime.now(timezone.utc) if dt.tzinfo else datetime.now()
-        return (now - dt) <= timedelta(hours=hours)
-    except Exception:
-        return True
-
-# ── Helpers ────────────────────────────────────────────────────
-def make_job(title, company, location, remote, date,
-             description, salary, url, platform):
+# ---------------------------------------------------------------------------
+# Job dict factory
+# ---------------------------------------------------------------------------
+def _job(title, company, location, remote, date_raw,
+         description, salary, url, platform):
     return {
         "job_title":        (title       or "").strip(),
         "company_name":     (company     or "").strip(),
         "location":         (location    or "").strip(),
         "remote_or_hybrid": (remote      or "").strip(),
-        "posting_date":     (date        or "").strip(),
+        "posting_date":     fmt_date(date_raw),
         "job_description":  (description or "").strip(),
         "salary":           (salary      or "").strip(),
         "job_url":          (url         or "").strip(),
         "platform_name":    platform,
     }
 
-def get(url: str, timeout: int = 20,
-        params: dict = None) -> Optional[requests.Response]:
-    for attempt in range(3):
-        try:
-            r = requests.get(url, timeout=timeout,
-                             headers=HEADERS, params=params)
-            if r.status_code == 200:
-                return r
-            if r.status_code == 429:
-                time.sleep(5 * (attempt + 1))
-        except Exception:
-            time.sleep(2)
-    return None
+# ---------------------------------------------------------------------------
+# ATS company lists
+# ---------------------------------------------------------------------------
+GREENHOUSE_COMPANIES = [
+    # Data tooling — highest DE job density
+    "databricks","dbt-labs","fivetran","airbyte","astronomer",
+    "hightouch","census","anomalo","monte-carlo","rudderstack",
+    "lightdash","datafold","preset","cube-dev",
+    # Tech companies with large data teams
+    "stripe","airbnb","doordash","coinbase","notion","figma",
+    "plaid","brex","chime","gusto","rippling","robinhood",
+    "scale-ai","datadog","cloudflare","retool","benchling",
+    "lyft","reddit","duolingo","discord","hubspot","zendesk",
+    "okta","elastic","airtable","zapier","segment","amplitude",
+    "mixpanel","heap",
+    # Healthcare — Sushma's domain
+    "tempus","flatiron","veeva","commure",
+    # Fintech
+    "carta","faire",
+]
+
+LEVER_COMPANIES = [
+    "confluent","starburst","clickhouse","benchling","samsara",
+    "podium","gladly","cohere","weights-biases","imply","acryl-data",
+    "atlan","hex","getcensus","tinybird","motherduck",
+]
 
 
-# ═══════════════════════════════════════════════════════════════
-# 1. GREENHOUSE — No date filter (API = open jobs only)
-# ═══════════════════════════════════════════════════════════════
-def scrape_greenhouse() -> List[dict]:
-    print(f"  ▶ Greenhouse ATS ({len(GREENHOUSE_COMPANIES)} companies)...")
+# ===========================================================================
+# SCRAPER 1 — GREENHOUSE  (no date filter — API returns only open jobs)
+# ===========================================================================
+def scrape_greenhouse(hours: int = 24) -> List[dict]:
+    name = "Greenhouse ATS"
+    print(f"  ▶ {name} ({len(GREENHOUSE_COMPANIES)} companies)...")
     results = []
-    kept = skip_title = skip_loc = 0
+    raw = kept = skip_title = skip_loc = skip_age = 0
 
     for company in GREENHOUSE_COMPANIES:
-        r = get(f"https://boards-api.greenhouse.io/v1/boards/{company}"
-                f"/jobs?content=true", timeout=15)
+        r = _get(
+            f"https://boards-api.greenhouse.io/v1/boards/{company}"
+            f"/jobs?content=true", timeout=15
+        )
         if not r:
             continue
         try:
             data = r.json()
         except Exception:
             continue
+
         for j in data.get("jobs", []):
-            if not title_matches(j.get("title", "")):
+            raw += 1
+            if not _title_ok(j.get("title", "")):
                 skip_title += 1
                 continue
             loc = (j.get("location") or {}).get("name", "")
-            if not is_us_or_remote(loc):
+            if not _loc_ok(loc):
                 skip_loc += 1
                 continue
-            date = j.get("updated_at", "") or j.get("created_at", "")
-            remote = "Remote" if "remote" in loc.lower() else "Hybrid"
+            # Use created_at for recency — updated_at changes on edits
+            date_raw = j.get("created_at") or j.get("updated_at") or ""
+            if not is_within_hours(date_raw, hours):
+                skip_age += 1
+                continue
             kept += 1
-            results.append(make_job(
-                j.get("title", ""),
-                company.replace("-", " ").title(),
-                loc, remote, date,
-                j.get("content", ""), "",
-                j.get("absolute_url", ""),
-                "Greenhouse ATS",
+            results.append(_job(
+                j.get("title",""),
+                company.replace("-"," ").title(),
+                loc,
+                "Remote" if "remote" in loc.lower() else "Hybrid",
+                date_raw,
+                j.get("content",""), "",
+                j.get("absolute_url",""),
+                name,
             ))
 
-    print(f"    ↳ kept={kept} | skip_title={skip_title} | skip_loc={skip_loc}")
+    print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
+          f"skip_title={skip_title:4d} | skip_loc={skip_loc:3d} | skip_age={skip_age:3d}")
     return results
 
 
-# ═══════════════════════════════════════════════════════════════
-# 2. LEVER — No date filter (API = open jobs only)
-# ═══════════════════════════════════════════════════════════════
-def scrape_lever() -> List[dict]:
-    print(f"  ▶ Lever ATS ({len(LEVER_COMPANIES)} companies)...")
+# ===========================================================================
+# SCRAPER 2 — LEVER  (no date filter — API returns only open jobs)
+# ===========================================================================
+def scrape_lever(hours: int = 24) -> List[dict]:
+    name = "Lever ATS"
+    print(f"  ▶ {name} ({len(LEVER_COMPANIES)} companies)...")
     results = []
-    kept = skip_title = skip_loc = 0
+    raw = kept = skip_title = skip_loc = skip_age = 0
 
     for company in LEVER_COMPANIES:
-        r = get(f"https://api.lever.co/v0/postings/{company}?mode=json",
-                timeout=15)
+        r = _get(f"https://api.lever.co/v0/postings/{company}?mode=json",
+                 timeout=15)
         if not r:
             continue
         try:
@@ -233,45 +308,51 @@ def scrape_lever() -> List[dict]:
                 continue
         except Exception:
             continue
+
         for j in data:
-            if not title_matches(j.get("text", "")):
+            raw += 1
+            if not _title_ok(j.get("text", "")):
                 skip_title += 1
                 continue
             loc = (j.get("categories") or {}).get("location", "") or ""
-            if not is_us_or_remote(loc):
+            if not _loc_ok(loc):
                 skip_loc += 1
                 continue
-            created  = j.get("createdAt", 0)
-            date_str = (datetime.fromtimestamp(created / 1000).isoformat()
-                        if created else "")
+            # createdAt is epoch-ms
+            date_raw = j.get("createdAt", "")
+            if not is_within_hours(date_raw, hours):
+                skip_age += 1
+                continue
             kept += 1
-            results.append(make_job(
-                j.get("text", ""),
+            results.append(_job(
+                j.get("text",""),
                 company.title(),
                 loc,
-                j.get("workplaceType", ""),
-                date_str,
-                j.get("descriptionPlain", ""), "",
-                j.get("hostedUrl", ""),
-                "Lever ATS",
+                j.get("workplaceType",""),
+                date_raw,
+                j.get("descriptionPlain",""), "",
+                j.get("hostedUrl",""),
+                name,
             ))
 
-    print(f"    ↳ kept={kept} | skip_title={skip_title} | skip_loc={skip_loc}")
+    print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
+          f"skip_title={skip_title:4d} | skip_loc={skip_loc:3d} | skip_age={skip_age:3d}")
     return results
 
 
-# ═══════════════════════════════════════════════════════════════
-# 3. REMOTEOK — 7-day lookback (board keeps old jobs listed)
-# ═══════════════════════════════════════════════════════════════
+# ===========================================================================
+# SCRAPER 3 — REMOTEOK  (24-hr filter)
+# ===========================================================================
 def scrape_remoteok(hours: int = 24) -> List[dict]:
-    print(f"  ▶ RemoteOK (24hr)...")
+    name = "RemoteOK"
+    print(f"  ▶ {name}...")
     tags = ["data-engineer", "analytics", "sql", "python", "spark", "airflow"]
     seen: set = set()
     results = []
-    kept = skip_title = skip_age = 0
+    raw = kept = skip_title = skip_age = 0
 
     for tag in tags:
-        r = get(f"https://remoteok.com/api?tag={tag}", timeout=20)
+        r = _get(f"https://remoteok.com/api?tag={tag}", timeout=20)
         if not r:
             continue
         try:
@@ -281,14 +362,12 @@ def scrape_remoteok(hours: int = 24) -> List[dict]:
         for j in data:
             if not isinstance(j, dict) or not j.get("position"):
                 continue
-            if not title_matches(j.get("position", "")):
+            raw += 1
+            if not _title_ok(j.get("position", "")):
                 skip_title += 1
                 continue
-            if not within_lookback(j.get("date", ""), hours):
+            if not is_within_hours(j.get("date", ""), hours):
                 skip_age += 1
-                continue
-            loc = j.get("location", "Remote") or "Remote"
-            if not is_us_or_remote(loc):
                 continue
             url = j.get("url", "")
             if not url.startswith("http"):
@@ -299,32 +378,36 @@ def scrape_remoteok(hours: int = 24) -> List[dict]:
             kept += 1
             sal = (f"${j['salary_min']}-${j['salary_max']}"
                    if j.get("salary_min") else "")
-            results.append(make_job(
-                j.get("position", ""), j.get("company", ""),
-                loc, "Remote", j.get("date", ""),
-                " ".join(j.get("tags", [])), sal, url, "RemoteOK",
+            results.append(_job(
+                j.get("position",""), j.get("company",""),
+                j.get("location","Remote"), "Remote",
+                j.get("date",""),
+                " ".join(j.get("tags",[])),
+                sal, url, name,
             ))
         time.sleep(1)
 
-    print(f"    ↳ kept={kept} | skip_title={skip_title} | skip_age={skip_age}")
+    print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
+          f"skip_title={skip_title:4d} | skip_age={skip_age:3d}")
     return results
 
 
-# ═══════════════════════════════════════════════════════════════
-# 4. WEWORKREMOTELY — 7-day lookback
-# ═══════════════════════════════════════════════════════════════
+# ===========================================================================
+# SCRAPER 4 — WEWORKREMOTELY  (24-hr filter)
+# ===========================================================================
 def scrape_weworkremotely(hours: int = 24) -> List[dict]:
-    print(f"  ▶ WeWorkRemotely (24hr)...")
+    name = "WeWorkRemotely"
+    print(f"  ▶ {name}...")
     feeds = [
         "https://weworkremotely.com/categories/remote-data-science-jobs.rss",
         "https://weworkremotely.com/categories/remote-programming-jobs.rss",
         "https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss",
     ]
     results = []
-    kept = skip_title = skip_age = 0
+    raw = kept = skip_title = skip_age = 0
 
     for feed_url in feeds:
-        r = get(feed_url, timeout=15)
+        r = _get(feed_url, timeout=15)
         if not r:
             continue
         try:
@@ -332,15 +415,16 @@ def scrape_weworkremotely(hours: int = 24) -> List[dict]:
         except ET.ParseError:
             continue
         for item in root.findall(".//item"):
-            raw = re.sub(r"<!\[CDATA\[|\]\]>",
-                         "", item.findtext("title") or "").strip()
-            company = raw.split(":")[0].strip() if ":" in raw else ""
-            title   = ":".join(raw.split(":")[1:]).strip() if ":" in raw else raw
-            if not title_matches(title):
+            raw += 1
+            raw_title = re.sub(r"<!\[CDATA\[|\]\]>",
+                               "", item.findtext("title") or "").strip()
+            company = raw_title.split(":")[0].strip() if ":" in raw_title else ""
+            title   = ":".join(raw_title.split(":")[1:]).strip() if ":" in raw_title else raw_title
+            if not _title_ok(title):
                 skip_title += 1
                 continue
             pub = item.findtext("pubDate", "")
-            if not within_lookback(pub, hours):
+            if not is_within_hours(pub, hours):
                 skip_age += 1
                 continue
             link = ""
@@ -350,34 +434,32 @@ def scrape_weworkremotely(hours: int = 24) -> List[dict]:
                     break
             if not link:
                 link = item.findtext("guid", "")
-            desc = re.sub(r"<[^>]+>", "",
-                          item.findtext("description", ""))
+            desc = re.sub(r"<[^>]+>", "", item.findtext("description",""))
             kept += 1
-            results.append(make_job(
-                title, company, "Remote", "Remote",
-                pub, desc, "", link, "WeWorkRemotely",
-            ))
+            results.append(_job(title, company, "Remote", "Remote",
+                                pub, desc, "", link, name))
 
-    print(f"    ↳ kept={kept} | skip_title={skip_title} | skip_age={skip_age}")
+    print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
+          f"skip_title={skip_title:4d} | skip_age={skip_age:3d}")
     return results
 
 
-# ═══════════════════════════════════════════════════════════════
-# 5. REMOTIVE — 7-day lookback
-# ═══════════════════════════════════════════════════════════════
+# ===========================================================================
+# SCRAPER 5 — REMOTIVE  (24-hr filter, two categories)
+# ===========================================================================
 def scrape_remotive(hours: int = 24) -> List[dict]:
-    print(f"  ▶ Remotive (24hr)...")
-    # Try multiple category URLs for best coverage
+    name = "Remotive"
+    print(f"  ▶ {name}...")
     urls = [
         "https://remotive.com/api/remote-jobs?category=data&limit=100",
         "https://remotive.com/api/remote-jobs?category=software-dev&limit=100",
     ]
     seen: set = set()
     results = []
-    kept = skip_title = skip_age = skip_loc = 0
+    raw = kept = skip_title = skip_age = skip_loc = 0
 
     for url in urls:
-        r = get(url, timeout=20)
+        r = _get(url, timeout=20)
         if not r:
             continue
         try:
@@ -385,48 +467,50 @@ def scrape_remotive(hours: int = 24) -> List[dict]:
         except Exception:
             continue
         for j in jobs:
-            if not title_matches(j.get("title", "")):
+            raw += 1
+            if not _title_ok(j.get("title", "")):
                 skip_title += 1
                 continue
-            if not within_lookback(j.get("publication_date", ""), hours):
+            if not is_within_hours(j.get("publication_date", ""), hours):
                 skip_age += 1
                 continue
             loc = j.get("candidate_required_location", "Remote") or "Remote"
-            if not is_us_or_remote(loc):
+            if not _loc_ok(loc):
                 skip_loc += 1
                 continue
-            url_job = j.get("url", "")
-            if url_job in seen:
+            job_url = j.get("url", "")
+            if job_url in seen:
                 continue
-            seen.add(url_job)
+            seen.add(job_url)
             kept += 1
-            results.append(make_job(
-                j.get("title", ""),
-                j.get("company_name", ""),
+            results.append(_job(
+                j.get("title",""), j.get("company_name",""),
                 loc, "Remote",
-                j.get("publication_date", ""),
-                j.get("description", ""),
-                j.get("salary", ""),
-                url_job, "Remotive",
+                j.get("publication_date",""),
+                j.get("description",""),
+                j.get("salary",""),
+                job_url, name,
             ))
 
-    print(f"    ↳ kept={kept} | skip_title={skip_title} | skip_age={skip_age} | skip_loc={skip_loc}")
+    print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
+          f"skip_title={skip_title:4d} | skip_age={skip_age:3d} | skip_loc={skip_loc:3d}")
     return results
 
 
-# ═══════════════════════════════════════════════════════════════
-# 6. JOBICY — 7-day lookback
-# ═══════════════════════════════════════════════════════════════
+# ===========================================================================
+# SCRAPER 6 — JOBICY  (24-hr filter, multiple tags)
+# ===========================================================================
 def scrape_jobicy(hours: int = 24) -> List[dict]:
-    print(f"  ▶ Jobicy (24hr)...")
+    name = "Jobicy"
+    print(f"  ▶ {name}...")
     tags = ["data-engineer", "data", "python", "sql", "analytics"]
     seen: set = set()
     results = []
-    kept = skip_title = skip_age = skip_loc = 0
+    raw = kept = skip_title = skip_age = skip_loc = 0
 
     for tag in tags:
-        r = get(f"https://jobicy.com/api/v2/remote-jobs?count=50&tag={tag}",
-                timeout=20)
+        r = _get(f"https://jobicy.com/api/v2/remote-jobs?count=50&tag={tag}",
+                 timeout=20)
         if not r:
             continue
         try:
@@ -434,14 +518,15 @@ def scrape_jobicy(hours: int = 24) -> List[dict]:
         except Exception:
             continue
         for j in jobs:
-            if not title_matches(j.get("jobTitle", "")):
+            raw += 1
+            if not _title_ok(j.get("jobTitle", "")):
                 skip_title += 1
                 continue
-            if not within_lookback(j.get("pubDate", ""), hours):
+            if not is_within_hours(j.get("pubDate", ""), hours):
                 skip_age += 1
                 continue
             loc = j.get("jobGeo", "Remote") or "Remote"
-            if not is_us_or_remote(loc):
+            if not _loc_ok(loc):
                 skip_loc += 1
                 continue
             url = j.get("url", "")
@@ -449,25 +534,26 @@ def scrape_jobicy(hours: int = 24) -> List[dict]:
                 continue
             seen.add(url)
             kept += 1
-            results.append(make_job(
-                j.get("jobTitle", ""),
-                j.get("companyName", ""),
+            results.append(_job(
+                j.get("jobTitle",""), j.get("companyName",""),
                 loc, "Remote",
-                j.get("pubDate", ""),
-                j.get("jobDescription", ""),
-                str(j.get("annualSalaryMin", "")),
-                url, "Jobicy",
+                j.get("pubDate",""),
+                j.get("jobDescription",""),
+                str(j.get("annualSalaryMin","")),
+                url, name,
             ))
 
-    print(f"    ↳ kept={kept} | skip_title={skip_title} | skip_age={skip_age} | skip_loc={skip_loc}")
+    print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
+          f"skip_title={skip_title:4d} | skip_age={skip_age:3d} | skip_loc={skip_loc:3d}")
     return results
 
 
-# ═══════════════════════════════════════════════════════════════
-# 7. INDEED — via Apify actor, 24hr filter
-# ═══════════════════════════════════════════════════════════════
+# ===========================================================================
+# SCRAPER 7 — INDEED via Apify  (24-hr via actor param)
+# ===========================================================================
 def scrape_indeed(client, hours: int = 24) -> List[dict]:
-    print(f"  ▶ Indeed (Apify — 24hr)...")
+    name = "Indeed"
+    print(f"  ▶ {name} (Apify actor)...")
     try:
         run = client.actor("misceres/indeed-scraper").call(
             run_input={
@@ -488,42 +574,43 @@ def scrape_indeed(client, hours: int = 24) -> List[dict]:
         )
         items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
         results = []
+        raw = len(items)
         kept = skip_title = skip_loc = skip_age = 0
         for item in items:
-            if not title_matches(item.get("title", "")):
+            if not _title_ok(item.get("title", "")):
                 skip_title += 1
                 continue
             loc = item.get("location", "")
-            if not is_us_or_remote(loc):
+            if not _loc_ok(loc):
                 skip_loc += 1
                 continue
-            if not within_lookback(item.get("postedAt", ""), hours):
+            if not is_within_hours(item.get("postedAt",""), hours):
                 skip_age += 1
                 continue
             kept += 1
-            results.append(make_job(
-                item.get("title", ""),
-                item.get("company", ""),
+            results.append(_job(
+                item.get("title",""), item.get("company",""),
                 loc, "",
-                item.get("postedAt", ""),
-                item.get("description", ""),
-                item.get("salary", ""),
-                item.get("url", ""),
-                "Indeed",
+                item.get("postedAt",""),
+                item.get("description",""),
+                item.get("salary",""),
+                item.get("url",""),
+                name,
             ))
-        print(f"    ↳ {len(items)} raw | kept={kept} | skip_title={skip_title} "
-              f"| skip_loc={skip_loc} | skip_age={skip_age}")
+        print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
+              f"skip_title={skip_title:4d} | skip_loc={skip_loc:3d} | skip_age={skip_age:3d}")
         return results
     except Exception as e:
-        print(f"    ⚠️  Indeed failed: {e}")
+        print(f"    {name:22s} | ⚠️  FAILED: {e}")
         return []
 
 
-# ═══════════════════════════════════════════════════════════════
-# 8. MYVISAJOBS — via Apify, H1B sponsors, 24hr
-# ═══════════════════════════════════════════════════════════════
+# ===========================================================================
+# SCRAPER 8 — MYVISAJOBS via Apify  (H1B sponsors, 24-hr URL filter)
+# ===========================================================================
 def scrape_myvisajobs(client) -> List[dict]:
-    print(f"  ▶ MyVisaJobs (Apify — H1B sponsors)...")
+    name = "MyVisaJobs"
+    print(f"  ▶ {name} (Apify — H1B sponsors)...")
     try:
         run = client.actor("apify/cheerio-scraper").call(
             run_input={
@@ -532,34 +619,30 @@ def scrape_myvisajobs(client) -> List[dict]:
                              "?Keyword=Data+Engineer&TimePosted=1"},
                     {"url": "https://www.myvisajobs.com/Search-Data-Engineer-Jobs.htm"
                              "?Keyword=Analytics+Engineer&TimePosted=1"},
+                    {"url": "https://www.myvisajobs.com/Search-Data-Engineer-Jobs.htm"
+                             "?Keyword=ETL+Engineer&TimePosted=1"},
                 ],
                 "pageFunction": """
                     async function pageFunction(context) {
                         const { $ } = context;
                         const jobs = [];
-                        // Try multiple table selectors
-                        const rows = $('table tr, .job-list tr, tr').filter(function() {
-                            return $(this).find('a[href*="Job-"]').length > 0 ||
-                                   $(this).find('a[href*="/job/"]').length > 0 ||
-                                   $(this).find('td').length >= 3;
-                        });
-                        rows.each((i, row) => {
+                        $('table tr').each((i, row) => {
                             const cells = $(row).find('td');
                             if (cells.length < 2) return;
-                            const a     = $(row).find('a').first();
+                            const a = $(row).find('a[href]').first();
                             const title = a.text().trim();
                             if (!title || title.length < 5) return;
-                            const href  = a.attr('href') || '';
+                            const href = a.attr('href') || '';
                             jobs.push({
-                                job_title:    title,
-                                company_name: cells.eq(1).text().trim(),
-                                location:     cells.length > 2 ? cells.eq(2).text().trim() : 'United States',
-                                posting_date: cells.length > 3 ? cells.eq(3).text().trim() : '',
-                                remote_or_hybrid: '',
-                                salary:       '',
+                                job_title:       title,
+                                company_name:    cells.eq(1).text().trim(),
+                                location:        cells.length > 2 ? cells.eq(2).text().trim() : 'United States',
+                                posting_date:    cells.length > 3 ? cells.eq(3).text().trim() : '',
+                                remote_or_hybrid:'',
+                                salary:          '',
                                 job_description: 'H1B Visa Sponsorship Available',
                                 job_url: href.startsWith('http') ? href : 'https://www.myvisajobs.com' + href,
-                                platform_name: 'MyVisaJobs'
+                                platform_name:   'MyVisaJobs'
                             });
                         });
                         return jobs;
@@ -571,57 +654,66 @@ def scrape_myvisajobs(client) -> List[dict]:
         )
         items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
         results = []
+        raw = len(items)
         kept = skip_title = 0
         for item in items:
-            if not title_matches(item.get("job_title", "")):
+            if not _title_ok(item.get("job_title", "")):
                 skip_title += 1
                 continue
-            item["platform_name"] = "MyVisaJobs"
-            item["job_description"] = "✅ H1B Visa Sponsorship Available"
+            item["platform_name"]    = name
+            item["job_description"]  = "✅ H1B Visa Sponsorship Available"
+            item.setdefault("remote_or_hybrid", "")
+            item.setdefault("salary", "")
+            item.setdefault("match_score", 0)
             kept += 1
             results.append(item)
-        print(f"    ↳ {len(items)} raw | kept={kept} | skip_title={skip_title}")
+        print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
+              f"skip_title={skip_title:4d}")
         return results
     except Exception as e:
-        print(f"    ⚠️  MyVisaJobs failed: {e}")
+        print(f"    {name:22s} | ⚠️  FAILED: {e}")
         return []
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===========================================================================
 # MASTER FUNCTION
-# ═══════════════════════════════════════════════════════════════
+# ===========================================================================
 def run_all_scrapers(apify_client, hours: int = 24) -> List[dict]:
     """
-    hours = lookback window for all job boards (default 24hr).
-    ATS scrapers (Greenhouse, Lever) have no date filter since
-    their API only returns currently open positions.
+    Scrape all sources. hours=24 by default (per requirements).
+    If total unique jobs < 10, caller should re-invoke with hours=72.
     """
-    all_jobs = []
+    all_jobs: List[dict] = []
 
-    print("\n📡 ATS scrapers (all open jobs, no date filter):")
-    all_jobs += scrape_greenhouse()
-    all_jobs += scrape_lever()
+    print(f"\n{'─'*60}")
+    print(f"  SCRAPING — window: {hours}hr | US+Remote only | DE titles only")
+    print(f"{'─'*60}")
+    print(f"  {'Source':22s} | {'raw':>4} | {'kept':>4} | details")
+    print(f"  {'─'*22}─┼─{'─'*5}─┼─{'─'*5}─┼─{'─'*20}")
 
-    print("\n📡 Job board scrapers (24hr):")
-    all_jobs += scrape_remoteok(hours=hours)
-    all_jobs += scrape_weworkremotely(hours=hours)
-    all_jobs += scrape_remotive(hours=hours)
-    all_jobs += scrape_jobicy(hours=hours)
-    print(f"  Subtotal: {len(all_jobs)} jobs")
+    # ATS — no date filter (API = open jobs only; we apply created_at filter)
+    all_jobs += scrape_greenhouse(hours)
+    all_jobs += scrape_lever(hours)
 
-    print("\n📡 Apify actor scrapers (24hr):")
+    # Job boards — 24-hr filter
+    all_jobs += scrape_remoteok(hours)
+    all_jobs += scrape_weworkremotely(hours)
+    all_jobs += scrape_remotive(hours)
+    all_jobs += scrape_jobicy(hours)
+
+    # Apify actors — 24-hr filter
     if apify_client:
-        all_jobs += scrape_indeed(apify_client, hours=24)
+        all_jobs += scrape_indeed(apify_client, hours)
         all_jobs += scrape_myvisajobs(apify_client)
 
-    # Deduplicate by URL then company+title
+    # Deduplicate by URL, then by company+title
     seen_urls: set = set()
     seen_keys: set = set()
-    unique = []
+    unique: List[dict] = []
     for j in all_jobs:
         url = j.get("job_url", "").strip()
-        key = (re.sub(r"\W", "", j.get("company_name", "").lower()) + "|" +
-               re.sub(r"\W", "", j.get("job_title",    "").lower()))
+        key = (re.sub(r"\W", "", (j.get("company_name") or "").lower()) + "|" +
+               re.sub(r"\W", "", (j.get("job_title")    or "").lower()))
         if url and url in seen_urls:
             continue
         if key in seen_keys:
@@ -631,5 +723,4 @@ def run_all_scrapers(apify_client, hours: int = 24) -> List[dict]:
         seen_keys.add(key)
         unique.append(j)
 
-    print(f"\n  ✅ Total unique jobs: {len(unique)}")
     return unique
