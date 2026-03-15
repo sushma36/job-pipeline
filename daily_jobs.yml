@@ -63,7 +63,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install apify-client openpyxl pandas python-dateutil
+          pip install apify-client openpyxl pandas python-dateutil requests
 
       # ── 4. Detect which run slot this is (AM or PM) ───────
       #    Sets RUN_SLOT env var used in the email subject line
