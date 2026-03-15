@@ -212,7 +212,7 @@ def get(url: str, timeout: int = 20, params: dict = None) -> Optional[requests.R
 def scrape_greenhouse(hours: int = 48) -> List[dict]:
     print(f"  ▶ Greenhouse ATS ({len(GREENHOUSE_COMPANIES)} companies)...")
     results = []
-    kept = skip_title = skip_loc = skip_age = 0
+    kept = skip_title = skip_loc = 0
 
     for company in GREENHOUSE_COMPANIES:
         r = get(f"https://boards-api.greenhouse.io/v1/boards/{company}/jobs?content=true")
@@ -232,9 +232,6 @@ def scrape_greenhouse(hours: int = 48) -> List[dict]:
                 skip_loc += 1
                 continue
             date = j.get("updated_at", "") or j.get("created_at", "")
-            if not within_lookback(date, hours):
-                skip_age += 1
-                continue
             kept += 1
             remote = "Remote" if "remote" in loc.lower() else "Hybrid"
             results.append(job(
@@ -246,7 +243,7 @@ def scrape_greenhouse(hours: int = 48) -> List[dict]:
                 "Greenhouse ATS",
             ))
 
-    print(f"    ↳ kept={kept} | skip_title={skip_title} | skip_loc={skip_loc} | skip_age={skip_age}")
+    print(f"    ↳ kept={kept} | skip_title={skip_title} | skip_loc={skip_loc}")
     return results
 
 
@@ -280,9 +277,6 @@ def scrape_lever(hours: int = 48) -> List[dict]:
                 continue
             created = j.get("createdAt", 0)
             date_str = datetime.fromtimestamp(created / 1000).isoformat() if created else ""
-            if not within_lookback(date_str, hours):
-                skip_age += 1
-                continue
             kept += 1
             results.append(job(
                 j.get("text", ""),
