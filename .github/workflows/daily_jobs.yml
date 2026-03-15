@@ -1,47 +1,23 @@
 # =============================================================
 #  GitHub Actions — Twice-Daily Data Engineer Job Pipeline
-#
-#  RUN SCHEDULE (recommended):
-#    🌅 Run 1 — 7:00 AM ET (11:00 UTC)
-#       Catches overnight + early-morning postings.
-#       You apply before most other candidates wake up.
-#
-#    ☀️  Run 2 — 1:00 PM ET (17:00 UTC)
-#       Catches mid-morning postings from hiring managers.
-#       You still apply same day, well before the evening crowd.
-#
-#  WHY THESE SLOTS:
-#    Most companies post jobs at 8-10 AM or 11 AM-12 PM.
-#    Applying within 2-4 hrs of posting improves visibility.
-#    Two runs per day means you never miss a fresh listing.
-#
+#  Run 1: 7:00 AM ET (11:00 UTC)
+#  Run 2: 3:00 PM ET (19:00 UTC)
 # =============================================================
-#  SETUP (one-time):
-#  1. Create a free PRIVATE GitHub repo named: job-pipeline
-#  2. Upload all Python files to repo root
-#  3. Upload this file to: .github/workflows/daily_jobs.yml
-#  4. Go to: Settings → Secrets and variables → Actions
-#     Add these 4 secrets:
-#       APIFY_TOKEN      → your token from apify.com
-#       GMAIL_USER       → sushmads698@gmail.com
-#       GMAIL_APP_PASS   → your 16-char Gmail app password
-#       NOTIFY_EMAIL     → sushmads698@gmail.com
-#  5. Done — runs automatically. Manually trigger from Actions tab.
+#  SECRETS NEEDED (Settings → Secrets → Actions):
+#    APIFY_TOKEN      → from apify.com
+#    GMAIL_USER       → sushmads698@gmail.com
+#    GMAIL_APP_PASS   → 16-char Gmail app password
+#    NOTIFY_EMAIL     → sushmads698@gmail.com
+#    LINKEDIN_COOKIE  → li_at cookie value from linkedin.com
 # =============================================================
 
 name: Twice-Daily Job Discovery Pipeline
 
 on:
   schedule:
-    # Run 1: 7:00 AM Eastern Time (11:00 UTC)
-    # Catches overnight postings — you apply before most people wake up
-    - cron: "0 11 * * *"
-    # Run 2: 3:00 PM Eastern Time (19:00 UTC)
-    # Catches post-lunch hiring manager wave — whole evening to apply
-    - cron: "0 19 * * *"
-
-  # Manual trigger from GitHub Actions tab anytime
-  workflow_dispatch:
+    - cron: "0 11 * * *"   # 7:00 AM ET
+    - cron: "0 19 * * *"   # 3:00 PM ET
+  workflow_dispatch:        # Manual trigger from Actions tab
 
 jobs:
   run-pipeline:
@@ -49,24 +25,19 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # ── 1. Check out your code ────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Set up Python ──────────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ── 3. Install dependencies ───────────────────────────
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install apify-client openpyxl pandas python-dateutil
+          pip install apify-client openpyxl pandas python-dateutil requests lxml beautifulsoup4
 
-      # ── 4. Detect which run slot this is (AM or PM) ───────
-      #    Sets RUN_SLOT env var used in the email subject line
       - name: Set run slot label
         run: |
           HOUR=$(date -u +%H)
@@ -76,22 +47,20 @@ jobs:
             echo "RUN_SLOT=🌇 Afternoon Run (3PM ET)" >> $GITHUB_ENV
           fi
 
-      # ── 5. Run the pipeline ───────────────────────────────
       - name: Run job discovery pipeline
         env:
-          APIFY_TOKEN:    ${{ secrets.APIFY_TOKEN }}
-          GMAIL_USER:     ${{ secrets.GMAIL_USER }}
-          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
-          NOTIFY_EMAIL:   ${{ secrets.NOTIFY_EMAIL }}
-          RUN_SLOT:       ${{ env.RUN_SLOT }}
+          APIFY_TOKEN:      ${{ secrets.APIFY_TOKEN }}
+          GMAIL_USER:       ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASS:   ${{ secrets.GMAIL_APP_PASS }}
+          NOTIFY_EMAIL:     ${{ secrets.NOTIFY_EMAIL }}
+          LINKEDIN_COOKIE:  ${{ secrets.LINKEDIN_COOKIE }}
+          RUN_SLOT:         ${{ env.RUN_SLOT }}
         run: python run_pipeline.py
 
-      # ── 6. Upload Excel as GitHub artifact (backup) ───────
-      #    Even if email fails, download from the Actions tab
       - name: Upload Excel results
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: "jobs-${{ env.RUN_SLOT }}-run${{ github.run_number }}"
+          name: "jobs-run${{ github.run_number }}"
           path: data_engineer_jobs_*.xlsx
           retention-days: 30
