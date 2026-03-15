@@ -1,145 +1,115 @@
 """
-=============================================================
-  resume_matcher.py — Resume scoring engine
-  Based on: SUSHMA_DASARI_Resume.pdf (correct version)
-=============================================================
+resume_matcher.py
+=================
+Scores job descriptions against Sushma Dasari's resume.
+Returns match score 0-100 with breakdown.
 """
 
 import re
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
-# ─── RESUME PROFILE ──────────────────────────────────────────
+# ─── Resume profile ───────────────────────────────────────────
+SKILLS = [
+    # Cloud
+    "aws", "s3", "redshift", "glue", "sagemaker", "iam", "cloudformation",
+    "gcp", "google cloud", "azure",
+    # Big data & streaming
+    "apache spark", "spark", "apache kafka", "kafka", "delta lake",
+    # ETL & orchestration
+    "apache airflow", "airflow", "dbt", "fivetran", "aws glue",
+    "informatica", "informatica powercenter", "etl", "elt",
+    "data pipelines", "data pipeline",
+    # Programming
+    "python", "sql", "scala", "shell scripting",
+    # Databases
+    "postgresql", "mysql", "oracle", "mongodb", "dynamodb",
+    "microsoft sql server", "sql server",
+    # Warehousing
+    "snowflake", "amazon redshift", "google bigquery", "bigquery",
+    "data warehouse", "data warehousing",
+    # Modeling & governance
+    "dimensional modeling", "data vault 2.0", "data vault",
+    "star schema", "data lineage", "great expectations",
+    "data modeling", "data governance", "data quality", "data validation",
+    # MLOps & AI
+    "mlflow", "langchain", "llamaindex", "machine learning",
+    "generative ai", "sagemaker",
+    # DevOps
+    "docker", "kubernetes", "terraform", "git", "jenkins",
+    # Analytics
+    "tableau",
+    # Domain
+    "healthcare", "claims", "fraud detection",
+    "feature engineering", "data lake",
+]
 
-RESUME = {
-    "skills": [
-        # Cloud
-        "aws", "s3", "redshift", "glue", "sagemaker", "iam",
-        "cloudformation", "gcp", "google cloud", "azure",
-        # Big Data & Streaming
-        "apache spark", "spark", "apache kafka", "kafka", "delta lake",
-        # ETL & Pipelines
-        "apache airflow", "airflow", "dbt", "fivetran", "aws glue",
-        "informatica", "informatica powercenter", "etl", "elt",
-        "data pipelines", "data pipeline",
-        # Programming
-        "python", "sql", "scala", "shell scripting",
-        # Databases
-        "postgresql", "mysql", "oracle", "mongodb", "dynamodb",
-        "microsoft sql server", "sql server",
-        # Warehousing
-        "snowflake", "amazon redshift", "google bigquery", "bigquery",
-        "data warehouse", "data warehousing",
-        # Modeling & Governance
-        "dimensional modeling", "data vault 2.0", "data vault",
-        "star schema", "data lineage", "great expectations",
-        "data modeling", "data governance", "data quality",
-        "data validation",
-        # MLOps & AI
-        "mlops", "mlflow", "langchain", "llamaindex",
-        "machine learning", "ml", "generative ai", "genai",
-        "ai", "llm", "sagemaker",
-        # DevOps
-        "docker", "kubernetes", "terraform", "git", "jenkins",
-        # Analytics
-        "tableau",
-        # Domain
-        "healthcare", "claims", "fraud detection",
-        "feature engineering", "data lake", "data lakehouse",
-    ],
+TECH_STACK = [
+    "python", "sql", "spark", "airflow", "kafka", "snowflake",
+    "aws", "redshift", "bigquery", "databricks", "delta lake",
+    "dbt", "glue", "sagemaker", "terraform", "docker",
+    "kubernetes", "scala", "fivetran", "oracle", "postgresql",
+    "mongodb", "mlflow", "langchain", "great expectations",
+    "tableau", "gcp", "azure",
+]
 
-    "tech_stack": [
-        "python", "sql", "spark", "airflow", "kafka", "snowflake",
-        "aws", "redshift", "bigquery", "databricks", "delta lake",
-        "dbt", "glue", "sagemaker", "terraform", "docker",
-        "kubernetes", "scala", "fivetran", "oracle", "postgresql",
-        "mongodb", "mlflow", "langchain", "great expectations",
-        "tableau", "gcp", "azure",
-    ],
-
-    "domains": [
-        "healthcare", "enterprise", "analytics", "cloud",
-        "machine learning", "fraud detection", "claims",
-        "fintech", "data platform", "ai",
-    ],
-
-    "level_keywords": {
-        "management": ["manager", "director", "vp ", "head of",
-                       "vice president", "chief"],
-        "senior":     ["senior", "lead", "staff", "principal",
-                       "architect", "sr.", "sr ", "7+", "8+", "10+"],
-        "junior":     ["junior", "associate", "entry", "jr.",
-                       "entry-level", "new grad", "0-2", "1-2"],
-    },
-}
+DOMAINS = [
+    "healthcare", "enterprise", "analytics", "cloud",
+    "machine learning", "fraud", "claims", "fintech", "data platform",
+]
 
 WEIGHTS = {
-    "skills_overlap":     0.40,
-    "tech_stack_overlap": 0.25,
-    "experience_level":   0.15,
-    "domain_relevance":   0.10,
-    "education_req":      0.10,
+    "skills":    0.40,
+    "tech":      0.25,
+    "level":     0.15,
+    "domain":    0.10,
+    "education": 0.10,
 }
 
 
-# ─── HELPERS ─────────────────────────────────────────────────
+def _n(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", text.lower())).strip()
 
-def _norm(text: str) -> str:
-    text = text.lower()
-    text = re.sub(r"[^\w\s]", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+def _has(phrase: str, text: str) -> bool:
+    return _n(phrase) in _n(text)
 
-def _phrase_in(phrase: str, text: str) -> bool:
-    return _norm(phrase) in _norm(text)
-
-def _count_matches(items: List[str], text: str) -> Tuple[List[str], int]:
-    matched = [i for i in items if _phrase_in(i, text)]
+def _count(items: list, text: str) -> Tuple[list, int]:
+    matched = [i for i in items if _has(i, text)]
     return matched, len(matched)
 
 
-# ─── SCORERS ─────────────────────────────────────────────────
-
-def _score_skills(combined: str) -> Tuple[float, List[str], List[str]]:
-    skills  = RESUME["skills"]
-    matched, n = _count_matches(skills, combined)
-
-    high_value = ["spark", "airflow", "kafka", "dbt", "snowflake",
-                  "delta lake", "sagemaker", "langchain", "mlflow",
-                  "great expectations", "terraform", "kubernetes", "bigquery"]
-    bonus = min(sum(1 for s in high_value if _phrase_in(s, combined)) * 0.025, 0.15)
-
-    ratio = n / max(len(skills) * 0.25, 1)   # 25% coverage = full score
-    raw   = min(ratio + bonus, 1.0)
-
-    key_skills = ["python", "sql", "spark", "airflow", "dbt", "snowflake",
-                  "kafka", "aws", "bigquery", "terraform", "docker",
-                  "kubernetes", "delta lake", "sagemaker", "mlflow"]
-    matched_lower = [m.lower() for m in matched]
-    missing = [s for s in key_skills if s not in matched_lower][:8]
-    return raw, matched, missing
+def _score_skills(text: str) -> Tuple[float, list, list]:
+    matched, n = _count(SKILLS, text)
+    bonus = min(sum(1 for s in ["spark","airflow","dbt","snowflake","delta lake",
+                                "sagemaker","great expectations","terraform"]
+                    if _has(s, text)) * 0.025, 0.15)
+    raw   = min(n / max(len(SKILLS) * 0.22, 1) + bonus, 1.0)
+    key   = ["python","sql","spark","airflow","dbt","snowflake","kafka",
+             "aws","bigquery","terraform","docker","kubernetes","delta lake","sagemaker"]
+    ml    = [s for s in key if s not in [m.lower() for m in matched]][:8]
+    return raw, matched, ml
 
 
-def _score_tech(combined: str) -> float:
-    stack = RESUME["tech_stack"]
-    _, n  = _count_matches(stack, combined)
-    return min(n / max(len(stack) * 0.30, 1), 1.0)
+def _score_tech(text: str) -> float:
+    _, n = _count(TECH_STACK, text)
+    return min(n / max(len(TECH_STACK) * 0.28, 1), 1.0)
 
 
 def _score_level(title: str, jd: str) -> float:
-    text = _norm(f"{title} {jd[:600]}")
-    for kw in RESUME["level_keywords"]["management"]:
-        if kw in text: return 0.05
-    for kw in RESUME["level_keywords"]["senior"]:
-        if kw in text: return 0.65
-    for kw in RESUME["level_keywords"]["junior"]:
-        if kw in text: return 1.0
+    t = _n(f"{title} {jd[:500]}")
+    mgmt    = ["manager","director","vp ","head of","vice president","chief"]
+    senior  = ["senior","lead","staff","principal","architect","sr.","7+","8+","10+"]
+    junior  = ["junior","associate","entry","jr.","entry-level","new grad","0-2","1-2"]
+    if any(k in t for k in mgmt):   return 0.05
+    if any(k in t for k in senior): return 0.65
+    if any(k in t for k in junior): return 1.00
     return 0.90
 
 
-def _score_domain(combined: str) -> float:
-    high = ["healthcare", "fintech", "enterprise", "analytics", "cloud", "ai", "ml"]
-    _, nh = _count_matches(high, combined)
-    _, nd = _count_matches(RESUME["domains"], combined)
+def _score_domain(text: str) -> float:
+    high = ["healthcare","fintech","enterprise","analytics","cloud","fraud"]
+    _, nh = _count(high, text)
+    _, nd = _count(DOMAINS, text)
     if nh >= 2: return 1.0
     if nh >= 1: return 0.80
     if nd >= 1: return 0.60
@@ -147,103 +117,94 @@ def _score_domain(combined: str) -> float:
 
 
 def _score_edu(jd: str) -> float:
-    jd_l = _norm(jd)
-    if "phd" in jd_l or "doctorate" in jd_l:  return 0.40
-    if "master" in jd_l or "m.s" in jd_l:     return 1.0
-    if "bachelor" in jd_l or "b.s" in jd_l:   return 1.0
+    j = _n(jd)
+    if "phd" in j or "doctorate" in j:        return 0.40
+    if "master" in j or "m.s" in j:           return 1.0
+    if "bachelor" in j or "b.s" in j:         return 1.0
     return 0.85
 
 
-# ─── MAIN MATCH FUNCTION ─────────────────────────────────────
-
 @dataclass
 class MatchResult:
-    match_score:     int
-    matched_skills:  str
-    missing_skills:  str
-    recommendation:  str
-    breakdown:       dict = field(default_factory=dict)
+    score:          int
+    matched_skills: str
+    missing_skills: str
+    recommendation: str
+    breakdown:      dict = field(default_factory=dict)
 
 
 def match_job(job: dict) -> MatchResult:
-    title    = job.get("job_title", "")
-    jd       = job.get("job_description", "")
+    title    = job.get("job_title",       "") or ""
+    jd       = job.get("job_description", "") or ""
     combined = f"{title} {jd}"
 
-    s_skills, matched, missing = _score_skills(combined)
-    s_tech                      = _score_tech(combined)
-    s_level                     = _score_level(title, jd)
-    s_domain                    = _score_domain(combined)
-    s_edu                       = _score_edu(jd)
+    ss, matched, missing = _score_skills(combined)
+    st = _score_tech(combined)
+    sl = _score_level(title, jd)
+    sd = _score_domain(combined)
+    se = _score_edu(jd)
 
-    raw   = (s_skills  * WEIGHTS["skills_overlap"] +
-             s_tech    * WEIGHTS["tech_stack_overlap"] +
-             s_level   * WEIGHTS["experience_level"] +
-             s_domain  * WEIGHTS["domain_relevance"] +
-             s_edu     * WEIGHTS["education_req"])
-    score = round(raw * 100)
+    score = round((ss * WEIGHTS["skills"]  +
+                   st * WEIGHTS["tech"]    +
+                   sl * WEIGHTS["level"]   +
+                   sd * WEIGHTS["domain"]  +
+                   se * WEIGHTS["education"]) * 100)
+
+    rec = ("✅ Apply"    if score >= 70 else
+           "⚠️ Consider" if score >= 50 else
+           "⛔ Skip")
 
     return MatchResult(
-        match_score    = score,
-        matched_skills = ", ".join(sorted(set(m.lower() for m in matched[:20]))),
+        score          = score,
+        matched_skills = ", ".join(sorted({m.lower() for m in matched[:20]})),
         missing_skills = ", ".join(missing),
-        recommendation = "✅ Apply" if score >= 70 else "⚠️ Consider" if score >= 55 else "⛔ Skip",
+        recommendation = rec,
         breakdown      = {
-            "skills (40%)":   round(s_skills * 100),
-            "tech (25%)":     round(s_tech * 100),
-            "level (15%)":    round(s_level * 100),
-            "domain (10%)":   round(s_domain * 100),
-            "education (10%)": round(s_edu * 100),
-        }
+            "skills (40%)":    round(ss * 100),
+            "tech (25%)":      round(st * 100),
+            "level (15%)":     round(sl * 100),
+            "domain (10%)":    round(sd * 100),
+            "education (10%)": round(se * 100),
+        },
     )
 
 
 def filter_and_score(jobs: list,
                      min_score: int = 50,
-                     fallback_score: int = 40,
-                     target_count: int = 10) -> list:
+                     fallback: int = 40,
+                     target: int = 10) -> list:
     """
-    Score all jobs. If fewer than target_count pass min_score,
-    automatically lower threshold to fallback_score.
+    Score all jobs. Auto-lower threshold to `fallback`
+    if fewer than `target` jobs pass `min_score`.
     """
-    scored = []
-    total  = len(jobs)
-    below  = 0
+    for j in jobs:
+        r = match_job(j)
+        j["match_score"]    = r.score
+        j["matched_skills"] = r.matched_skills
+        j["missing_skills"] = r.missing_skills
+        j["recommendation"] = r.recommendation
+        j["breakdown"]      = r.breakdown
 
-    for job in jobs:
-        result = match_job(job)
-        job["match_score"]    = result.match_score
-        job["matched_skills"] = result.matched_skills
-        job["missing_skills"] = result.missing_skills
-        job["recommendation"] = result.recommendation
-        job["breakdown"]      = result.breakdown
-        if result.match_score >= min_score:
-            scored.append(job)
-        else:
-            below += 1
+    passed = [j for j in jobs if j["match_score"] >= min_score]
+    print(f"  Scored {len(jobs)} — {len(passed)} ≥{min_score}, "
+          f"{len(jobs)-len(passed)} below")
 
-    print(f"  Scored {total} jobs: {len(scored)} ≥{min_score}, {below} below")
+    if len(passed) < target:
+        passed = [j for j in jobs if j["match_score"] >= fallback]
+        print(f"  ⚠️  Auto-lowered threshold → {len(passed)} ≥{fallback}")
 
-    # Auto-lower threshold if too few results
-    if len(scored) < target_count:
-        print(f"  ⚠️  Only {len(scored)} jobs — lowering threshold to ≥{fallback_score}")
-        scored = [j for j in jobs if j["match_score"] >= fallback_score]
-        print(f"  Now {len(scored)} jobs at ≥{fallback_score}")
-
-    # Sort: newest first, then by score
-    scored.sort(
+    passed.sort(
         key=lambda j: (j.get("posting_date", ""), j["match_score"]),
-        reverse=True
+        reverse=True,
     )
-    return scored
+    return passed
 
 
 def deduplicate(jobs: list) -> list:
-    def _norm_key(s): return re.sub(r"\s+", "", s.lower().strip())
     seen = {}
-    for job in jobs:
-        key = (_norm_key(job.get("company_name", "")) + "|" +
-               _norm_key(job.get("job_title", "")))
-        if key not in seen or job["match_score"] > seen[key]["match_score"]:
-            seen[key] = job
+    for j in jobs:
+        key = (re.sub(r"\W","", j.get("company_name","").lower()) + "|" +
+               re.sub(r"\W","", j.get("job_title",   "").lower()))
+        if key not in seen or j["match_score"] > seen[key]["match_score"]:
+            seen[key] = j
     return list(seen.values())
