@@ -30,7 +30,7 @@ NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL",   "sushmads698@gmail.com")
 RUN_SLOT       = os.environ.get("RUN_SLOT",       "")
 
 OUTPUT  = f"data_engineer_jobs_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-HOURS   = 48
+HOURS   = 168  # 7 days for job boards; ATS ignores date
 MIN     = 50    # primary threshold
 FALL    = 40    # fallback if fewer than 10 jobs pass
 TARGET  = 10
