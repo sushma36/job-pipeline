@@ -142,9 +142,8 @@ def _title_ok(title: str) -> bool:
 # Location filter — US or Remote allowlist
 # ---------------------------------------------------------------------------
 _REMOTE = [
-    "remote", "anywhere", "worldwide", "work from home", "wfh",
-    "distributed", "us only", "usa only", "north america",
-    "global", "flexible", "united states", "u.s.a",
+    "remote", "us only", "usa only", "north america",
+   "flexible", "united states", "u.s.a",
 ]
 _STATES = [
     "alabama","alaska","arizona","arkansas","california","colorado",
