@@ -24,9 +24,9 @@ from excel_exporter import export_to_excel
 
 # ── Config ────────────────────────────────────────────────────
 APIFY_TOKEN    = os.environ.get("APIFY_TOKEN",    "")
-GMAIL_USER     = os.environ.get("GMAIL_USER",     "sushmads698@gmail.com")
+GMAIL_USER     = os.environ.get("GMAIL_USER",     "sushma81932@gmail.com")
 GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS", "")
-NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL",   "sushmads698@gmail.com")
+NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL",   "sushma81932@gmail.com")
 RUN_SLOT       = os.environ.get("RUN_SLOT",       "")
 
 WINDOW_HOURS   = 24      # primary scrape window
