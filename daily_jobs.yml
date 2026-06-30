@@ -23,9 +23,9 @@
 #  4. Go to: Settings → Secrets and variables → Actions
 #     Add these 4 secrets:
 #       APIFY_TOKEN      → your token from apify.com
-#       GMAIL_USER       → sushmads698@gmail.com
+#       GMAIL_USER       → sushma81932@gmail.com
 #       GMAIL_APP_PASS   → your 16-char Gmail app password
-#       NOTIFY_EMAIL     → sushmads698@gmail.com
+#       NOTIFY_EMAIL     → sushma81932@gmail.com
 #  5. Done — runs automatically. Manually trigger from Actions tab.
 # =============================================================
 
