@@ -23,11 +23,12 @@ from resume_matcher import filter_and_score, deduplicate
 from excel_exporter import export_to_excel
 
 # ── Config ────────────────────────────────────────────────────
-APIFY_TOKEN    = os.environ.get("APIFY_TOKEN",    "")
-GMAIL_USER     = os.environ.get("GMAIL_USER",     "sushma81932@gmail.com")
-GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS", "")
-NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL",   "sushma81932@gmail.com")
-RUN_SLOT       = os.environ.get("RUN_SLOT",       "")
+APIFY_TOKEN     = os.environ.get("APIFY_TOKEN",     "")
+GMAIL_USER      = os.environ.get("GMAIL_USER",      "sushma81932@gmail.com")
+GMAIL_APP_PASS  = os.environ.get("GMAIL_APP_PASS",  "")
+NOTIFY_EMAIL    = os.environ.get("NOTIFY_EMAIL",    "sushma81932@gmail.com")
+RUN_SLOT        = os.environ.get("RUN_SLOT",        "")
+LINKEDIN_COOKIE = os.environ.get("LINKEDIN_COOKIE", "")
 
 WINDOW_HOURS   = 24      # primary scrape window
 FALLBACK_HOURS = 72      # expand to this if < MIN_JOBS found
@@ -190,7 +191,7 @@ def run_pipeline():
     client = ApifyClient(APIFY_TOKEN)
 
     # ── Step 1: Scrape (24h) ──────────────────────────────────
-    all_jobs = run_all_scrapers(client, hours=WINDOW_HOURS)
+    all_jobs = run_all_scrapers(client, hours=WINDOW_HOURS, linkedin_cookie=LINKEDIN_COOKIE)
     window_used = WINDOW_HOURS
     window_label = "24h"
 
@@ -198,7 +199,7 @@ def run_pipeline():
     if len(all_jobs) < MIN_JOBS:
         print(f"\n⚠️  Only {len(all_jobs)} raw jobs in {WINDOW_HOURS}h — "
               f"expanding to {FALLBACK_HOURS}h...")
-        extra = run_all_scrapers(client, hours=FALLBACK_HOURS)
+        extra = run_all_scrapers(client, hours=FALLBACK_HOURS, linkedin_cookie=LINKEDIN_COOKIE)
         # Mark expanded-window jobs
         seen_urls = {j.get("job_url","") for j in all_jobs}
         added = 0
@@ -233,7 +234,8 @@ def run_pipeline():
     print(f"  {len(deduped)} unique jobs")
 
     # ── Diagnostics ───────────────────────────────────────────
-    total_sources = 8   # Greenhouse, Lever, RemoteOK, WWR, Remotive, Jobicy, Indeed, MyVisaJobs
+    total_sources = 10  # Greenhouse, Lever, RemoteOK, WWR, Remotive, Jobicy,
+                         # Indeed, MyVisaJobs, LinkedIn, Built In
     apply    = sum(1 for j in deduped if "Apply"    in j.get("recommendation",""))
     consider = sum(1 for j in deduped if "Consider" in j.get("recommendation",""))
     visa     = sum(1 for j in deduped if j.get("platform_name","") == "MyVisaJobs")

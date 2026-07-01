@@ -18,6 +18,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
+from dedup_utils import dedupe_jobs
+
 # ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
@@ -605,7 +607,115 @@ def scrape_indeed(client, hours: int = 24) -> List[dict]:
 
 
 # ===========================================================================
-# SCRAPER 8 — MYVISAJOBS via Apify  (H1B sponsors, 24-hr URL filter)
+# SCRAPER 8 — LINKEDIN via Apify  (24-hr filter; needs LINKEDIN_COOKIE)
+# ===========================================================================
+def scrape_linkedin(client, li_at_cookie: str, hours: int = 24) -> List[dict]:
+    name = "LinkedIn"
+    if not li_at_cookie:
+        print(f"    {name:22s} | ⏭️  skipped — LINKEDIN_COOKIE not set")
+        return []
+    print(f"  ▶ {name} (Apify actor)...")
+    try:
+        run = client.actor("curious_coder/linkedin-jobs-scraper").call(
+            run_input={
+                "searchQueries": [
+                    {"keyword": kw, "location": "United States"}
+                    for kw in ("Data Engineer", "Analytics Engineer",
+                               "ETL Engineer", "Data Platform Engineer")
+                ],
+                "maxResults": 200,
+                "postedAt": "past-24h" if hours <= 24 else "past-week",
+                "cookie": li_at_cookie,
+            },
+            timeout_secs=300,
+        )
+        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        results = []
+        raw = len(items)
+        kept = skip_title = skip_loc = skip_age = 0
+        for item in items:
+            title = item.get("title", "")
+            if not _title_ok(title):
+                skip_title += 1
+                continue
+            loc = item.get("location", "")
+            if not _loc_ok(loc):
+                skip_loc += 1
+                continue
+            if not is_within_hours(item.get("postedAt", ""), hours):
+                skip_age += 1
+                continue
+            kept += 1
+            results.append(_job(
+                title, item.get("company", ""),
+                loc, item.get("workplaceType", ""),
+                item.get("postedAt", ""),
+                item.get("description", ""),
+                item.get("salary", ""),
+                item.get("applyUrl", ""),
+                name,
+            ))
+        print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
+              f"skip_title={skip_title:4d} | skip_loc={skip_loc:3d} | skip_age={skip_age:3d}")
+        return results
+    except Exception as e:
+        print(f"    {name:22s} | ⚠️  FAILED: {e}")
+        return []
+
+
+# ===========================================================================
+# SCRAPER 9 — BUILT IN via Apify  (tech/startup-focused board, 24-hr filter)
+# ===========================================================================
+def scrape_builtin(client, hours: int = 24) -> List[dict]:
+    name = "Built In"
+    print(f"  ▶ {name} (Apify actor)...")
+    try:
+        run = client.actor("solidcode/builtin-scraper").call(
+            run_input={
+                "searchUrls": [
+                    "https://builtin.com/jobs/data/data-engineering",
+                ],
+                "maxItems": 100,
+            },
+            timeout_secs=180,
+        )
+        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        results = []
+        raw = len(items)
+        kept = skip_title = skip_loc = skip_age = 0
+        for item in items:
+            title = item.get("title", "") or item.get("job_title", "")
+            if not _title_ok(title):
+                skip_title += 1
+                continue
+            loc = item.get("location", "")
+            if not _loc_ok(loc):
+                skip_loc += 1
+                continue
+            posted = item.get("postedAt", "") or item.get("date", "")
+            if not is_within_hours(posted, hours):
+                skip_age += 1
+                continue
+            kept += 1
+            results.append(_job(
+                title, item.get("company", "") or item.get("companyName", ""),
+                loc, item.get("remote", ""),
+                posted,
+                item.get("description", ""),
+                item.get("salary", ""),
+                item.get("url", ""),
+                name,
+            ))
+        print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
+              f"skip_title={skip_title:4d} | skip_loc={skip_loc:3d} | skip_age={skip_age:3d}")
+        return results
+    except Exception as e:
+        print(f"    {name:22s} | ⚠️  FAILED: {e}")
+        return []
+
+
+# ===========================================================================
+# SCRAPER 10 — MYVISAJOBS via Apify  (H1B sponsors, 24-hr URL filter)
 # ===========================================================================
 def scrape_myvisajobs(client) -> List[dict]:
     name = "MyVisaJobs"
@@ -677,7 +787,7 @@ def scrape_myvisajobs(client) -> List[dict]:
 # ===========================================================================
 # MASTER FUNCTION
 # ===========================================================================
-def run_all_scrapers(apify_client, hours: int = 24) -> List[dict]:
+def run_all_scrapers(apify_client, hours: int = 24, linkedin_cookie: str = "") -> List[dict]:
     """
     Scrape all sources. hours=24 by default (per requirements).
     If total unique jobs < 10, caller should re-invoke with hours=72.
@@ -704,22 +814,15 @@ def run_all_scrapers(apify_client, hours: int = 24) -> List[dict]:
     if apify_client:
         all_jobs += scrape_indeed(apify_client, hours)
         all_jobs += scrape_myvisajobs(apify_client)
+        all_jobs += scrape_linkedin(apify_client, linkedin_cookie, hours)
+        all_jobs += scrape_builtin(apify_client, hours)
 
-    # Deduplicate by URL, then by company+title
-    seen_urls: set = set()
-    seen_keys: set = set()
-    unique: List[dict] = []
-    for j in all_jobs:
-        url = j.get("job_url", "").strip()
-        key = (re.sub(r"\W", "", (j.get("company_name") or "").lower()) + "|" +
-               re.sub(r"\W", "", (j.get("job_title")    or "").lower()))
-        if url and url in seen_urls:
-            continue
-        if key in seen_keys:
-            continue
-        if url:
-            seen_urls.add(url)
-        seen_keys.add(key)
-        unique.append(j)
+    # Deduplicate: exact URL match, then fuzzy company+title match
+    # (catches "Sr. Data Engineer" vs "Senior Data Engineer II - Remote"
+    # showing up as separate rows from different boards)
+    before = len(all_jobs)
+    unique = dedupe_jobs(all_jobs)
+    print(f"\n  🔄 Dedup: {before} raw → {len(unique)} unique "
+          f"({before - len(unique)} duplicates removed)")
 
     return unique

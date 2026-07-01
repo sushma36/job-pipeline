@@ -8,32 +8,32 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
+from dedup_utils import dedupe_jobs
+
 SKILLS = [
-    "aws","s3","redshift","glue","sagemaker","iam","cloudformation",
-    "gcp","google cloud","azure",
+    "aws","s3","glue","sagemaker","iam","cloudformation",
+    "gcp","google cloud",
     "apache spark","spark","apache kafka","kafka","delta lake",
-    "apache airflow","airflow","dbt","fivetran","aws glue",
-    "informatica","informatica powercenter","etl","elt",
+    "apache airflow","airflow","dbt","aws glue","parquet",
+    "etl","elt",
     "data pipelines","data pipeline",
-    "python","sql","scala","shell scripting",
-    "postgresql","mysql","oracle","mongodb","dynamodb","sql server",
-    "snowflake","amazon redshift","google bigquery","bigquery",
+    "python","sql","shell scripting","shell",
+    "postgresql","mysql","oracle","sql server","microsoft sql server",
+    "google bigquery","bigquery","databricks",
     "data warehouse","data warehousing",
-    "dimensional modeling","data vault","star schema","data lineage",
-    "great expectations","data modeling","data governance",
-    "data quality","data validation",
-    "mlflow","langchain","sagemaker","machine learning",
-    "docker","kubernetes","terraform","git","jenkins",
-    "tableau","healthcare","claims","fraud detection",
-    "feature engineering","data lake",
+    "data lineage","data modeling","data governance",
+    "data quality","data validation","anomaly detection",
+    "sagemaker","machine learning","scikit-learn","pandas","numpy",
+    "feature engineering",
+    "git","tableau","healthcare","claims","fraud detection",
+    "hipaa","data lake","infrastructure as code",
 ]
 
 TECH_STACK = [
-    "python","sql","spark","airflow","kafka","snowflake","aws",
-    "redshift","bigquery","databricks","delta lake","dbt","glue",
-    "sagemaker","terraform","docker","kubernetes","scala","fivetran",
-    "oracle","postgresql","mongodb","mlflow","langchain",
-    "great expectations","tableau","gcp","azure",
+    "python","sql","spark","airflow","aws","bigquery","databricks",
+    "delta lake","dbt","glue","sagemaker","oracle","postgresql",
+    "mysql","sql server","tableau","gcp","kafka","parquet",
+    "cloudformation","git",
 ]
 
 DOMAINS = [
@@ -59,13 +59,13 @@ def _count(items, text) -> Tuple[list, int]:
 def _score_skills(text):
     matched, n = _count(SKILLS, text)
     bonus = min(
-        sum(1 for s in ["spark","airflow","dbt","snowflake","delta lake",
-                        "sagemaker","great expectations","terraform"]
+        sum(1 for s in ["spark","airflow","dbt","delta lake",
+                        "sagemaker","databricks","bigquery"]
             if _has(s, text)) * 0.025, 0.15
     )
     raw   = min(n / max(len(SKILLS) * 0.22, 1) + bonus, 1.0)
-    key   = ["python","sql","spark","airflow","dbt","snowflake","kafka",
-             "aws","bigquery","terraform","docker","kubernetes",
+    key   = ["python","sql","spark","airflow","dbt","kafka",
+             "aws","bigquery","databricks","glue",
              "delta lake","sagemaker"]
     ml    = [s for s in key if not _has(s, text)][:8]
     return raw, matched, ml
@@ -180,10 +180,6 @@ def filter_and_score(jobs: list,
 
 
 def deduplicate(jobs: list) -> list:
-    seen = {}
-    for j in jobs:
-        key = (re.sub(r"\W", "", (j.get("company_name") or "").lower()) + "|" +
-               re.sub(r"\W", "", (j.get("job_title")    or "").lower()))
-        if key not in seen or j["match_score"] > seen[key]["match_score"]:
-            seen[key] = j
-    return list(seen.values())
+    """Fuzzy dedup (see dedup_utils.py) — keeps the highest-scoring copy of
+    each near-duplicate posting instead of requiring an exact title match."""
+    return dedupe_jobs(jobs, score_key="match_score")
