@@ -954,6 +954,7 @@ def run_all_scrapers(apify_client, hours: int = 24, linkedin_cookie: str = "") -
         all_jobs += scrape_via_config(apify_client, "handshake", hours)
         all_jobs += scrape_via_config(apify_client, "otta", hours)
         all_jobs += scrape_via_config(apify_client, "remote_rocketship", hours)
+        all_jobs += scrape_via_config(apify_client, "google_jobs", hours)
 
     # Deduplicate: exact URL match, then fuzzy company+title match
     # (catches "Sr. Data Engineer" vs "Senior Data Engineer II - Remote"

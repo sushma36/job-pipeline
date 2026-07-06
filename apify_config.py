@@ -363,7 +363,46 @@ PLATFORM_CONFIGS = {
                   "selectors need to be rewritten against the actual DOM.",
     },
 
-    # ── 14. MYVISAJOBS ─────────────────────────────────────────
+    # ── 15. GOOGLE JOBS ─────────────────────────────────────────
+    "google_jobs": {
+        "actor": "epctex/google-jobs-scraper",
+        "description": "Google's job aggregator — pulls in listings from Glassdoor, "
+                        "LinkedIn, ZipRecruiter, Indeed, and direct company career "
+                        "pages under one search. Same vendor (epctex) as Wellfound/"
+                        "WeWorkRemotely/RemoteOK/YC Startup already in this file, so "
+                        "reasonably reliable, but output field names below are based "
+                        "on that vendor's consistent naming pattern across their "
+                        "other actors, not a confirmed sample of this actor's output "
+                        "— verify against the first real run and adjust field_map if "
+                        "any columns come back empty.",
+        "input": {
+            "queries": [
+                "Data Engineer", "Senior Data Engineer",
+                "Analytics Engineer", "ETL Engineer",
+            ],
+            "countryCode": "us",
+            "maxItems": 150,
+        },
+        "field_map": {
+            "job_title": "title",
+            "company_name": "company",
+            "location": "location",
+            "remote_or_hybrid": "workplaceType",
+            "salary": "salary",
+            "posting_date": "postedAt",
+            "job_description": "description",
+            "job_url": "url",
+        },
+        "platform_name": "Google Jobs",
+        "notes": "No built-in 24hr filter in the input schema — recency is enforced "
+                  "in post-processing via is_within_hours() same as every other "
+                  "source. Aggregates several boards already scraped directly "
+                  "elsewhere in this pipeline (Indeed, LinkedIn) — the fuzzy dedup "
+                  "pass should catch the overlap, worth checking dedup counts after "
+                  "the first run.",
+    },
+
+    # ── 16. MYVISAJOBS ─────────────────────────────────────────
     "myvisajobs": {
         "actor": "apify/web-scraper",
         "description": "H1B/visa-sponsoring employers. Critical for sponsorship-needed candidates.",
