@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from dedup_utils import dedupe_jobs
+from apify_config import PLATFORM_CONFIGS
 
 # ---------------------------------------------------------------------------
 # HTTP
@@ -715,7 +716,68 @@ def scrape_builtin(client, hours: int = 24) -> List[dict]:
 
 
 # ===========================================================================
-# SCRAPER 10 — MYVISAJOBS via Apify  (H1B sponsors, 24-hr URL filter)
+# SCRAPERS 11-16 — sites driven off apify_config.PLATFORM_CONFIGS
+# (Wellfound, SimplyHired, Jooble, YC Work at a Startup, Handshake, Otta)
+#
+# Wellfound + YC Startup use dedicated, actively-maintained Apify actors —
+# reasonably reliable.
+# SimplyHired, Jooble, Handshake, Otta use the generic "apify/web-scraper"
+# actor with hand-written CSS selectors against live site HTML — these WILL
+# break whenever those sites change their markup, and Handshake/Otta also
+# need headless Chrome + may be login-gated. Each is wrapped in try/except
+# so a broken selector fails that one source, not the whole run.
+# ===========================================================================
+def scrape_via_config(client, config_key: str, hours: int = 24,
+                       timeout_secs: int = 180) -> List[dict]:
+    cfg = PLATFORM_CONFIGS.get(config_key)
+    if not cfg:
+        return []
+    name = cfg.get("platform_name", config_key)
+    print(f"  ▶ {name} (Apify actor)...")
+    try:
+        run = client.actor(cfg["actor"]).call(
+            run_input=cfg["input"], timeout_secs=timeout_secs
+        )
+        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        field_map = cfg.get("field_map")  # None => item keys already match our schema
+
+        results = []
+        raw = len(items)
+        kept = skip_title = skip_loc = skip_age = 0
+        for item in items:
+            mapped = ({k: item.get(v, "") for k, v in field_map.items()}
+                      if field_map else item)
+            title = mapped.get("job_title", "")
+            if not _title_ok(title):
+                skip_title += 1
+                continue
+            loc = mapped.get("location", "")
+            if not _loc_ok(loc):
+                skip_loc += 1
+                continue
+            if not is_within_hours(mapped.get("posting_date", ""), hours):
+                skip_age += 1
+                continue
+            kept += 1
+            results.append(_job(
+                title, mapped.get("company_name", ""),
+                loc, mapped.get("remote_or_hybrid", ""),
+                mapped.get("posting_date", ""),
+                mapped.get("job_description", ""),
+                mapped.get("salary", ""),
+                mapped.get("job_url", ""),
+                name,
+            ))
+        print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
+              f"skip_title={skip_title:4d} | skip_loc={skip_loc:3d} | skip_age={skip_age:3d}")
+        return results
+    except Exception as e:
+        print(f"    {name:22s} | ⚠️  FAILED (site/selectors may have changed): {e}")
+        return []
+
+
+# ===========================================================================
+# SCRAPER 17 — MYVISAJOBS via Apify  (H1B sponsors, 24-hr URL filter)
 # ===========================================================================
 def scrape_myvisajobs(client) -> List[dict]:
     name = "MyVisaJobs"
@@ -816,6 +878,14 @@ def run_all_scrapers(apify_client, hours: int = 24, linkedin_cookie: str = "") -
         all_jobs += scrape_myvisajobs(apify_client)
         all_jobs += scrape_linkedin(apify_client, linkedin_cookie, hours)
         all_jobs += scrape_builtin(apify_client, hours)
+
+        # Previously configured but never wired in
+        all_jobs += scrape_via_config(apify_client, "wellfound", hours)
+        all_jobs += scrape_via_config(apify_client, "yc_startup", hours)
+        all_jobs += scrape_via_config(apify_client, "simplyhired", hours)
+        all_jobs += scrape_via_config(apify_client, "jooble", hours)
+        all_jobs += scrape_via_config(apify_client, "handshake", hours)
+        all_jobs += scrape_via_config(apify_client, "otta", hours)
 
     # Deduplicate: exact URL match, then fuzzy company+title match
     # (catches "Sr. Data Engineer" vs "Senior Data Engineer II - Remote"

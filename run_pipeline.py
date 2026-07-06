@@ -234,8 +234,10 @@ def run_pipeline():
     print(f"  {len(deduped)} unique jobs")
 
     # ── Diagnostics ───────────────────────────────────────────
-    total_sources = 10  # Greenhouse, Lever, RemoteOK, WWR, Remotive, Jobicy,
-                         # Indeed, MyVisaJobs, LinkedIn, Built In
+    total_sources = 16  # Greenhouse, Lever, RemoteOK, WWR, Remotive, Jobicy,
+                         # Indeed, MyVisaJobs, LinkedIn, Built In,
+                         # Wellfound, YC Startup, SimplyHired, Jooble,
+                         # Handshake, Otta
     apply    = sum(1 for j in deduped if "Apply"    in j.get("recommendation",""))
     consider = sum(1 for j in deduped if "Consider" in j.get("recommendation",""))
     visa     = sum(1 for j in deduped if j.get("platform_name","") == "MyVisaJobs")

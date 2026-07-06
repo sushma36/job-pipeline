@@ -308,7 +308,7 @@ PLATFORM_CONFIGS = {
                 }
             """,
             "maxRequestsPerCrawl": 5,
-            "useChrome": true,
+            "useChrome": True,
         },
         "platform_name": "Handshake",
         "notes": "Requires headless Chrome. Use Apify's Puppeteer actor for SPA rendering.",
@@ -367,7 +367,7 @@ PLATFORM_CONFIGS = {
                 }
             """,
             "maxRequestsPerCrawl": 5,
-            "useChrome": true,
+            "useChrome": True,
         },
         "platform_name": "Otta",
         "notes": "React SPA — needs headless Chrome. Login may be required for full description.",
