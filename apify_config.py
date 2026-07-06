@@ -314,7 +314,56 @@ PLATFORM_CONFIGS = {
         "notes": "Requires headless Chrome. Use Apify's Puppeteer actor for SPA rendering.",
     },
 
-    # ── 11. MYVISAJOBS ─────────────────────────────────────────
+    # ── 13. REMOTE ROCKETSHIP ───────────────────────────────────
+    "remote_rocketship": {
+        "actor": "apify/web-scraper",
+        "description": "Remote-only aggregator. NOTE: selectors below are based on "
+                        "URL-pattern matching (job links look like "
+                        "/company/{slug}/jobs/{slug}/), not verified CSS classes — "
+                        "this actor's author never had dev-tools access to the live "
+                        "DOM. More likely to need adjustment than the dedicated actors.",
+        "input": {
+            "startUrls": [
+                {"url": "https://www.remoterocketship.com/jobs/data-engineer/"},
+                {"url": "https://www.remoterocketship.com/jobs/analytics-engineer/"},
+            ],
+            "pageFunction": """
+                async function pageFunction(context) {
+                    const { $ } = context;
+                    const jobs = [];
+                    $('a[href*="/company/"][href*="/jobs/"]').each((i, el) => {
+                        const href = $(el).attr('href') || '';
+                        if (!/\\/company\\/[^/]+\\/jobs\\/[^/]+\\/?$/.test(href)) return;
+                        const title = $(el).text().trim();
+                        if (!title) return;
+                        // Walk up to the nearest card-like container for context
+                        const card = $(el).closest('div, li, article');
+                        const company = card.find('a[href^="/company/"]:not([href*="/jobs/"])')
+                                             .first().text().trim();
+                        jobs.push({
+                            job_title: title,
+                            company_name: company,
+                            location: card.find('a[href*="-remote"]').first().text().trim(),
+                            remote_or_hybrid: 'Remote',
+                            posting_date: card.find('*:contains("ago")').last().text().trim(),
+                            job_url: href.startsWith('http')
+                                     ? href : 'https://www.remoterocketship.com' + href,
+                            platform_name: 'Remote Rocketship',
+                        });
+                    });
+                    return jobs;
+                }
+            """,
+            "maxRequestsPerCrawl": 10,
+        },
+        "platform_name": "Remote Rocketship",
+        "notes": "HIGH RISK OF BREAKAGE — selectors are best-effort based on URL "
+                  "structure, not confirmed against live HTML/dev tools. Monitor "
+                  "raw/kept counts after each run; if raw=0 consistently, the "
+                  "selectors need to be rewritten against the actual DOM.",
+    },
+
+    # ── 14. MYVISAJOBS ─────────────────────────────────────────
     "myvisajobs": {
         "actor": "apify/web-scraper",
         "description": "H1B/visa-sponsoring employers. Critical for sponsorship-needed candidates.",

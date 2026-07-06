@@ -237,6 +237,13 @@ LEVER_COMPANIES = [
     "atlan","hex","getcensus","tinybird","motherduck",
 ]
 
+ASHBY_COMPANIES = [
+    # Data/infra-heavy companies known to use Ashby
+    "ramp","notion","linear","vanta","replit","cursor","deel",
+    "harvey","modern-treasury","retool","substack","webflow",
+    "openai","perplexity-ai","mercury","brex",
+]
+
 
 # ===========================================================================
 # SCRAPER 1 — GREENHOUSE  (no date filter — API returns only open jobs)
@@ -334,6 +341,65 @@ def scrape_lever(hours: int = 24) -> List[dict]:
                 date_raw,
                 j.get("descriptionPlain",""), "",
                 j.get("hostedUrl",""),
+                name,
+            ))
+
+    print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
+          f"skip_title={skip_title:4d} | skip_loc={skip_loc:3d} | skip_age={skip_age:3d}")
+    return results
+
+
+# ===========================================================================
+# SCRAPER 2B — ASHBY  (no date filter — API returns only open jobs)
+# Uses Ashby's genuinely public, no-auth REST API — no Apify actor needed.
+# https://api.ashbyhq.com/posting-api/job-board/{slug}
+# ===========================================================================
+def scrape_ashby(hours: int = 24) -> List[dict]:
+    name = "Ashby ATS"
+    print(f"  ▶ {name} ({len(ASHBY_COMPANIES)} companies)...")
+    results = []
+    raw = kept = skip_title = skip_loc = skip_age = 0
+
+    for company in ASHBY_COMPANIES:
+        r = _get(
+            f"https://api.ashbyhq.com/posting-api/job-board/{company}",
+            timeout=15, params={"includeCompensation": "true"},
+        )
+        if not r:
+            continue
+        try:
+            data = r.json()
+            jobs = data.get("jobs", [])
+        except Exception:
+            continue
+
+        for j in jobs:
+            if not j.get("isListed", True):
+                continue  # unlisted/draft — never surface these
+            raw += 1
+            title = j.get("title", "")
+            if not _title_ok(title):
+                skip_title += 1
+                continue
+            loc = j.get("location", "")
+            if not _loc_ok(loc) and not j.get("isRemote"):
+                skip_loc += 1
+                continue
+            date_raw = j.get("publishedAt", "")
+            if not is_within_hours(date_raw, hours):
+                skip_age += 1
+                continue
+            kept += 1
+            comp = j.get("compensation", {}) or {}
+            results.append(_job(
+                title,
+                company.replace("-", " ").title(),
+                loc,
+                j.get("workplaceType", "Remote" if j.get("isRemote") else ""),
+                date_raw,
+                j.get("descriptionPlain", ""),
+                comp.get("compensationTierSummary", ""),
+                j.get("jobUrl", ""),
                 name,
             ))
 
@@ -865,6 +931,7 @@ def run_all_scrapers(apify_client, hours: int = 24, linkedin_cookie: str = "") -
     # ATS — no date filter (API = open jobs only; we apply created_at filter)
     all_jobs += scrape_greenhouse(hours)
     all_jobs += scrape_lever(hours)
+    all_jobs += scrape_ashby(hours)
 
     # Job boards — 24-hr filter
     all_jobs += scrape_remoteok(hours)
@@ -886,6 +953,7 @@ def run_all_scrapers(apify_client, hours: int = 24, linkedin_cookie: str = "") -
         all_jobs += scrape_via_config(apify_client, "jooble", hours)
         all_jobs += scrape_via_config(apify_client, "handshake", hours)
         all_jobs += scrape_via_config(apify_client, "otta", hours)
+        all_jobs += scrape_via_config(apify_client, "remote_rocketship", hours)
 
     # Deduplicate: exact URL match, then fuzzy company+title match
     # (catches "Sr. Data Engineer" vs "Senior Data Engineer II - Remote"
