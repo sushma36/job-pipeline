@@ -18,7 +18,7 @@ try:
 except ImportError:
     HAS_APIFY = False
 
-from scrapers       import run_all_scrapers
+from scrapers       import run_all_scrapers, get_source_stats
 from resume_matcher import filter_and_score, deduplicate
 from excel_exporter import export_to_excel
 
@@ -39,7 +39,7 @@ OUTPUT         = "data_engineer_jobs_last24h.xlsx"
 
 
 # ── Email helpers ─────────────────────────────────────────────
-def _build_html(jobs, run_date, slot, window):
+def _build_html(jobs, run_date, slot, window, source_stats=None):
     apply    = sum(1 for j in jobs if "Apply"    in j.get("recommendation",""))
     consider = sum(1 for j in jobs if "Consider" in j.get("recommendation",""))
     avg      = round(sum(j.get("match_score",0) for j in jobs)/max(len(jobs),1))
@@ -53,6 +53,24 @@ def _build_html(jobs, run_date, slot, window):
     win_note = (f' <span style="background:#F9A825;color:#fff;padding:2px 8px;'
                 f'border-radius:8px;font-size:11px;">⏰ {expanded} from 72h window</span>'
                 if expanded else "")
+
+    # Source-health banner: surfaces sources returning 0 jobs directly in the
+    # email instead of only in GitHub Actions logs. This is what would have
+    # caught the LinkedIn/Built In/Wellfound/YC Startup actor-input bugs
+    # immediately instead of running broken for days unnoticed.
+    health_banner = ""
+    if source_stats:
+        zero = [n for n, c in source_stats if c == 0]
+        total = len(source_stats)
+        if zero:
+            health_banner = f"""
+      <div style="background:#FDECEA;color:#8B0000;padding:10px 28px;
+                  border-bottom:2px solid #f5c6cb;font-size:12px;">
+        ⚠️ <strong>{len(zero)}/{total} sources returned 0 jobs this run:</strong>
+        {', '.join(zero)} — check Apify Console for actor errors/quota if this
+        persists across runs.
+      </div>"""
+
     rows = ""
     for j in jobs:
         s   = j.get("match_score", 0)
@@ -82,7 +100,7 @@ def _build_html(jobs, run_date, slot, window):
         <h2 style="margin:0;">🚀 Data Engineer Jobs — United States &nbsp;{badge}</h2>
         <p style="margin:6px 0 0;opacity:.8;">{run_date} • Matched to Sushma Dasari's resume
           • 🛂 = H1B sponsorship • ⏰ = expanded 72h window</p>
-      </div>
+      </div>{health_banner}
       <div style="background:#EBF3FB;padding:12px 28px;border-bottom:2px solid #c8dff5;">
         📋 <strong>{len(jobs)}</strong> jobs &nbsp;|&nbsp;
         ✅ <strong>{apply}</strong> Apply &nbsp;|&nbsp;
@@ -116,14 +134,34 @@ def _build_html(jobs, run_date, slot, window):
 
 def _build_diag_html(all_jobs, filtered, window, sources_stats):
     run_date = datetime.now().strftime("%B %d, %Y %I:%M %p")
-    pcounts  = Counter(j.get("platform_name","") for j in all_jobs)
-    def clr(c): return "#375623" if c > 0 else "#999"
-    rows = "".join(
-        f"<tr><td style='padding:6px 12px;'>{p}</td>"
-        f"<td style='padding:6px 12px;text-align:center;font-weight:bold;"
-        f"color:{clr(c)};'>{c}</td></tr>"
-        for p, c in sorted(pcounts.items(), key=lambda x: -x[1])
-    ) or "<tr><td colspan='2' style='padding:12px;text-align:center;'>No data</td></tr>"
+    # FIXED 2026-07-06: this used to build the table from Counter(all_jobs),
+    # which only lists platforms that returned ≥1 job -- a source stuck at
+    # 0 for weeks (broken actor, bad input schema, expired token) would
+    # silently vanish from this report instead of showing up as the "0" row
+    # that would have flagged the problem immediately. Now uses the real
+    # per-source stats (including zeros) passed in from get_source_stats().
+    def clr(c): return "#375623" if c > 0 else "#8B0000"
+    if sources_stats:
+        rows = "".join(
+            f"<tr><td style='padding:6px 12px;'>{p}</td>"
+            f"<td style='padding:6px 12px;text-align:center;font-weight:bold;"
+            f"color:{clr(c)};'>{c}</td></tr>"
+            for p, c in sorted(sources_stats, key=lambda x: -x[1])
+        )
+        zero_count = sum(1 for _, c in sources_stats if c == 0)
+    else:
+        pcounts = Counter(j.get("platform_name","") for j in all_jobs)
+        rows = "".join(
+            f"<tr><td style='padding:6px 12px;'>{p}</td>"
+            f"<td style='padding:6px 12px;text-align:center;font-weight:bold;"
+            f"color:{clr(c)};'>{c}</td></tr>"
+            for p, c in sorted(pcounts.items(), key=lambda x: -x[1])
+        ) or "<tr><td colspan='2' style='padding:12px;text-align:center;'>No data</td></tr>"
+        zero_count = 0
+    alert = (f"<div style='background:#FDECEA;color:#8B0000;padding:10px 20px;"
+             f"border-left:4px solid #8B0000;'>⚠️ {zero_count} source(s) returned "
+             f"0 jobs — check Apify Console for actor errors if this persists.</div>"
+             if zero_count else "")
     return f"""<html><body style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
       <div style="background:#13315C;color:#fff;padding:20px;border-radius:8px 8px 0 0;">
         <h2 style="margin:0;">⚙️ Pipeline Health Check</h2>
@@ -133,7 +171,7 @@ def _build_diag_html(all_jobs, filtered, window, sources_stats):
         Pipeline ran — 0 jobs met threshold.<br><br>
         Raw jobs scraped: <strong>{len(all_jobs)}</strong><br>
         After resume scoring: <strong>{len(filtered)}</strong>
-      </div>
+      </div>{alert}
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <tr style="background:#1E3A5F;color:#fff;">
           <th style="padding:8px 12px;text-align:left;">Platform</th>
@@ -260,7 +298,7 @@ def run_pipeline():
 
     if not deduped:
         print("\n⚠️  0 jobs — sending diagnostic email...")
-        html = _build_diag_html(all_jobs, filtered, window_used, {})
+        html = _build_diag_html(all_jobs, filtered, window_used, get_source_stats())
         _send(f"⚙️ Pipeline — 0 matches | {datetime.now().strftime('%b %d %Y')}", html)
         return
 
@@ -275,7 +313,7 @@ def run_pipeline():
     win_tag   = f" ⏰72h" if expanded else ""
     _send(
         f"🔍 {len(deduped)} DE Jobs (US{win_tag}) — {apply} Apply | {run_date}{slot_tag}",
-        _build_html(deduped, run_date, RUN_SLOT, window_used),
+        _build_html(deduped, run_date, RUN_SLOT, window_used, get_source_stats()),
         OUTPUT,
     )
 

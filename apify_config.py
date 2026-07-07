@@ -95,17 +95,21 @@ PLATFORM_CONFIGS = {
 
     # ── 3. WELLFOUND (AngelList Talent) ───────────────────────
     "wellfound": {
-        "actor": "epctex/wellfound-scraper",
-        "description": "Startup & VC-backed companies. Great for growth-stage roles.",
+        "actor": "unfenced-group/wellfound-scraper",
+        "description": "Startup & VC-backed companies. Great for growth-stage roles. "
+                        "FIXED 2026-07-06: previous actor 'epctex/wellfound-scraper' "
+                        "does not exist in Apify's catalog -- no developer by that "
+                        "name publishes a Wellfound actor. Every call to it was "
+                        "failing (actor-not-found) since the day it was activated. "
+                        "Replaced with a verified real actor; input schema confirmed "
+                        "via Apify's own input-schema page as of this fix.",
         "input": {
-            "searchTerms": ["Data Engineer", "Analytics Engineer", "ETL Engineer"],
-            "locations": ["United States", "Remote"],
-            "maxItems": 100,
-            "postedWithin": 1,              # days
-            "extractFields": [
-                "title", "company", "location", "remote",
-                "compensation", "postedAt", "description", "url"
-            ],
+            "searchQuery": "data engineer",
+            "location": "",
+            "remote": True,
+            "maxResults": 100,
+            "daysOld": 1,
+            "skipReposts": False,
         },
         "field_map": {
             "job_title": "title",
@@ -118,13 +122,19 @@ PLATFORM_CONFIGS = {
             "job_url": "url",
         },
         "platform_name": "Wellfound",
-        "notes": "No auth needed. Filter by 'postedWithin: 1' for 24hr freshness.",
+        "notes": "Input schema confirmed (searchQuery/location/remote/maxResults/"
+                  "daysOld/skipReposts/startUrls). Output field_map is a best guess "
+                  "based on standard job-scraper conventions, not a confirmed sample "
+                  "of this actor's real dataset output -- check the first live run "
+                  "and adjust field_map if columns come back empty. Only supports "
+                  "one searchQuery string per run, so this only covers 'data "
+                  "engineer' -- broaden later if needed.",
     },
 
     # ── 4. REMOTEOK ────────────────────────────────────────────
     "remoteok": {
         "actor": "epctex/remoteok-scraper",
-        "description": "Remote-first job board with tech focus. Good for WFH roles.",
+        "description": "Startup & VC-backed companies. Great for growth-stage roles.",
         "input": {
             "tags": ["data-engineer", "python", "sql", "aws", "spark"],
             "maxItems": 100,
@@ -262,11 +272,18 @@ PLATFORM_CONFIGS = {
 
     # ── 9. YC WORK AT A STARTUP ────────────────────────────────
     "yc_startup": {
-        "actor": "epctex/y-combinator-jobs-scraper",
-        "description": "YC-backed companies. High quality, fast-growing startups.",
+        "actor": "parsebird/yc-jobs-scraper",
+        "description": "YC-backed companies. High quality, fast-growing startups. "
+                        "FIXED 2026-07-06: previous actor "
+                        "'epctex/y-combinator-jobs-scraper' does not exist in "
+                        "Apify's catalog -- no developer by that name publishes a "
+                        "YC jobs actor. Every call was failing (actor-not-found) "
+                        "since activation. Replaced with a verified real actor.",
         "input": {
-            "startUrls": ["https://www.workatastartup.com/jobs?role=eng&query=data+engineer"],
-            "maxItems": 100,
+            "role": "data-engineer",
+            "location": "remote",
+            "maxPages": 3,
+            "maxResults": 100,
         },
         "field_map": {
             "job_title": "title",
@@ -279,7 +296,9 @@ PLATFORM_CONFIGS = {
             "job_url": "url",
         },
         "platform_name": "YC Work at a Startup",
-        "notes": "Includes batch info (S24, W25) — filter by recent batches for newer companies.",
+        "notes": "Input schema confirmed (role/location/maxPages/maxResults). "
+                  "Output field_map is a best guess, not a confirmed sample of "
+                  "this actor's real dataset output -- check the first live run.",
     },
 
     # ── 10. HANDSHAKE ──────────────────────────────────────────

@@ -676,24 +676,28 @@ def scrape_indeed(client, hours: int = 24) -> List[dict]:
 # ===========================================================================
 # SCRAPER 8 — LINKEDIN via Apify  (24-hr filter; needs LINKEDIN_COOKIE)
 # ===========================================================================
-def scrape_linkedin(client, li_at_cookie: str, hours: int = 24) -> List[dict]:
+def scrape_linkedin(client, li_at_cookie: str = "", hours: int = 24) -> List[dict]:
+    # FIXED 2026-07-06: the actor curious_coder/linkedin-jobs-scraper is real,
+    # but the previous input (searchQueries/cookie/postedAt fields) does not
+    # match its actual schema at all. This actor scrapes LinkedIn's PUBLIC job
+    # search and takes pre-built LinkedIn search URLs as input -- it doesn't
+    # even use a cookie (that's a different, paid actor:
+    # curious_coder/linkedin-jobs-search-scraper, $30/mo, for boolean search).
+    # li_at_cookie is accepted for interface compatibility with run_pipeline.py
+    # but currently unused by this actor -- kept as a param in case we switch
+    # to the advanced/paid actor later.
     name = "LinkedIn"
-    if not li_at_cookie:
-        print(f"    {name:22s} | ⏭️  skipped — LINKEDIN_COOKIE not set")
-        return []
     print(f"  ▶ {name} (Apify actor)...")
+    date_filter = "r86400" if hours <= 24 else "r259200"  # seconds: 24h vs 72h
+    search_urls = [
+        f"https://www.linkedin.com/jobs/search/?keywords={kw.replace(' ', '%20')}"
+        f"&location=United%20States&f_TPR={date_filter}&f_WT=2"  # f_WT=2 = remote
+        for kw in ("Data Engineer", "Senior Data Engineer",
+                   "Analytics Engineer", "ETL Engineer")
+    ]
     try:
         run = client.actor("curious_coder/linkedin-jobs-scraper").call(
-            run_input={
-                "searchQueries": [
-                    {"keyword": kw, "location": "United States"}
-                    for kw in ("Data Engineer", "Analytics Engineer",
-                               "ETL Engineer", "Data Platform Engineer")
-                ],
-                "maxResults": 200,
-                "postedAt": "past-24h" if hours <= 24 else "past-week",
-                "cookie": li_at_cookie,
-            },
+            run_input={"urls": search_urls, "count": 50},
             timeout_secs=300,
         )
         items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
@@ -709,17 +713,17 @@ def scrape_linkedin(client, li_at_cookie: str, hours: int = 24) -> List[dict]:
             if not _loc_ok(loc):
                 skip_loc += 1
                 continue
-            if not is_within_hours(item.get("postedAt", ""), hours):
+            if not is_within_hours(item.get("postedAt", "") or item.get("listedAt", ""), hours):
                 skip_age += 1
                 continue
             kept += 1
             results.append(_job(
-                title, item.get("company", ""),
+                title, item.get("company", "") or item.get("companyName", ""),
                 loc, item.get("workplaceType", ""),
-                item.get("postedAt", ""),
-                item.get("description", ""),
+                item.get("postedAt", "") or item.get("listedAt", ""),
+                item.get("description", "") or item.get("descriptionText", ""),
                 item.get("salary", ""),
-                item.get("applyUrl", ""),
+                item.get("link", "") or item.get("jobUrl", ""),
                 name,
             ))
         print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
@@ -737,12 +741,20 @@ def scrape_builtin(client, hours: int = 24) -> List[dict]:
     name = "Built In"
     print(f"  ▶ {name} (Apify actor)...")
     try:
+        # FIXED 2026-07-06: previous input used "searchUrls"/"maxItems", which
+        # are NOT real fields on solidcode/builtin-scraper -- confirmed real
+        # schema is searchQueries/location/remoteMode/maxResultsPerQuery/
+        # fetchDescription. The wrong field names meant this actor was either
+        # rejecting the input outright or silently falling back to defaults
+        # and scraping something we never asked for.
         run = client.actor("solidcode/builtin-scraper").call(
             run_input={
-                "searchUrls": [
-                    "https://builtin.com/jobs/data/data-engineering",
-                ],
-                "maxItems": 100,
+                "searchQueries": ["data engineer", "analytics engineer"],
+                "location": "",
+                "remoteMode": "any",
+                "postedWithinDays": 1 if hours <= 24 else 3,
+                "maxResultsPerQuery": 100,
+                "fetchDescription": True,
             },
             timeout_secs=180,
         )
@@ -915,11 +927,34 @@ def scrape_myvisajobs(client) -> List[dict]:
 # ===========================================================================
 # MASTER FUNCTION
 # ===========================================================================
+# ===========================================================================
+# SOURCE-LEVEL STATS — tracks each source's yield so a source silently
+# returning 0 for days (e.g. broken actor, expired token) is visible in the
+# email report instead of only in GitHub Actions logs nobody checks daily.
+# ===========================================================================
+_SOURCE_STATS: List[tuple] = []  # (name, count)
+
+
+def _track(name: str, fn) -> List[dict]:
+    try:
+        result = fn()
+    except Exception as e:
+        print(f"    {name:22s} | ⚠️  UNCAUGHT EXCEPTION: {e}")
+        result = []
+    _SOURCE_STATS.append((name, len(result)))
+    return result
+
+
+def get_source_stats() -> List[tuple]:
+    return list(_SOURCE_STATS)
+
+
 def run_all_scrapers(apify_client, hours: int = 24, linkedin_cookie: str = "") -> List[dict]:
     """
     Scrape all sources. hours=24 by default (per requirements).
     If total unique jobs < 10, caller should re-invoke with hours=72.
     """
+    _SOURCE_STATS.clear()
     all_jobs: List[dict] = []
 
     print(f"\n{'─'*60}")
@@ -929,32 +964,39 @@ def run_all_scrapers(apify_client, hours: int = 24, linkedin_cookie: str = "") -
     print(f"  {'─'*22}─┼─{'─'*5}─┼─{'─'*5}─┼─{'─'*20}")
 
     # ATS — no date filter (API = open jobs only; we apply created_at filter)
-    all_jobs += scrape_greenhouse(hours)
-    all_jobs += scrape_lever(hours)
-    all_jobs += scrape_ashby(hours)
+    all_jobs += _track("Greenhouse", lambda: scrape_greenhouse(hours))
+    all_jobs += _track("Lever", lambda: scrape_lever(hours))
+    all_jobs += _track("Ashby ATS", lambda: scrape_ashby(hours))
 
     # Job boards — 24-hr filter
-    all_jobs += scrape_remoteok(hours)
-    all_jobs += scrape_weworkremotely(hours)
-    all_jobs += scrape_remotive(hours)
-    all_jobs += scrape_jobicy(hours)
+    all_jobs += _track("RemoteOK", lambda: scrape_remoteok(hours))
+    all_jobs += _track("WeWorkRemotely", lambda: scrape_weworkremotely(hours))
+    all_jobs += _track("Remotive", lambda: scrape_remotive(hours))
+    all_jobs += _track("Jobicy", lambda: scrape_jobicy(hours))
 
     # Apify actors — 24-hr filter
     if apify_client:
-        all_jobs += scrape_indeed(apify_client, hours)
-        all_jobs += scrape_myvisajobs(apify_client)
-        all_jobs += scrape_linkedin(apify_client, linkedin_cookie, hours)
-        all_jobs += scrape_builtin(apify_client, hours)
+        all_jobs += _track("Indeed", lambda: scrape_indeed(apify_client, hours))
+        all_jobs += _track("MyVisaJobs", lambda: scrape_myvisajobs(apify_client))
+        all_jobs += _track("LinkedIn", lambda: scrape_linkedin(apify_client, linkedin_cookie, hours))
+        all_jobs += _track("Built In", lambda: scrape_builtin(apify_client, hours))
 
         # Previously configured but never wired in
-        all_jobs += scrape_via_config(apify_client, "wellfound", hours)
-        all_jobs += scrape_via_config(apify_client, "yc_startup", hours)
-        all_jobs += scrape_via_config(apify_client, "simplyhired", hours)
-        all_jobs += scrape_via_config(apify_client, "jooble", hours)
-        all_jobs += scrape_via_config(apify_client, "handshake", hours)
-        all_jobs += scrape_via_config(apify_client, "otta", hours)
-        all_jobs += scrape_via_config(apify_client, "remote_rocketship", hours)
-        all_jobs += scrape_via_config(apify_client, "google_jobs", hours)
+        all_jobs += _track("Wellfound", lambda: scrape_via_config(apify_client, "wellfound", hours))
+        all_jobs += _track("YC Startup", lambda: scrape_via_config(apify_client, "yc_startup", hours))
+        all_jobs += _track("SimplyHired", lambda: scrape_via_config(apify_client, "simplyhired", hours))
+        all_jobs += _track("Jooble", lambda: scrape_via_config(apify_client, "jooble", hours))
+        all_jobs += _track("Handshake", lambda: scrape_via_config(apify_client, "handshake", hours))
+        all_jobs += _track("Otta", lambda: scrape_via_config(apify_client, "otta", hours))
+        all_jobs += _track("Remote Rocketship", lambda: scrape_via_config(apify_client, "remote_rocketship", hours))
+        all_jobs += _track("Google Jobs", lambda: scrape_via_config(apify_client, "google_jobs", hours))
+
+    # Print a "sources returning zero" summary right in the log, and it also
+    # gets pulled into the email body by run_pipeline.py via get_source_stats()
+    zero_sources = [n for n, c in _SOURCE_STATS if c == 0]
+    if zero_sources:
+        print(f"\n  ⚠️  {len(zero_sources)}/{len(_SOURCE_STATS)} sources returned "
+              f"ZERO jobs this run: {', '.join(zero_sources)}")
 
     # Deduplicate: exact URL match, then fuzzy company+title match
     # (catches "Sr. Data Engineer" vs "Senior Data Engineer II - Remote"
