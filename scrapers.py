@@ -999,7 +999,6 @@ def run_all_scrapers(apify_client, hours: int = 24, linkedin_cookie: str = "") -
         all_jobs += _track("Handshake", lambda: scrape_via_config(apify_client, "handshake", hours))
         all_jobs += _track("Otta", lambda: scrape_via_config(apify_client, "otta", hours))
         all_jobs += _track("Remote Rocketship", lambda: scrape_via_config(apify_client, "remote_rocketship", hours))
-        all_jobs += _track("Google Jobs", lambda: scrape_via_config(apify_client, "google_jobs", hours))
 
     # Print a "sources returning zero" summary right in the log, and it also
     # gets pulled into the email body by run_pipeline.py via get_source_stats()
