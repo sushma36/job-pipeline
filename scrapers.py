@@ -638,7 +638,7 @@ def scrape_indeed(client, hours: int = 24) -> List[dict]:
                 "maxItems":   130,
                 "timePosted": "last24hours",
             },
-            timeout_secs=300,
+            run_timeout=timedelta(seconds=300),
         )
         items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
         results = []
@@ -698,7 +698,7 @@ def scrape_linkedin(client, li_at_cookie: str = "", hours: int = 24) -> List[dic
     try:
         run = client.actor("curious_coder/linkedin-jobs-scraper").call(
             run_input={"urls": search_urls, "count": 50},
-            timeout_secs=300,
+            run_timeout=timedelta(seconds=300),
         )
         items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
         results = []
@@ -756,7 +756,7 @@ def scrape_builtin(client, hours: int = 24) -> List[dict]:
                 "maxResultsPerQuery": 100,
                 "fetchDescription": True,
             },
-            timeout_secs=180,
+            run_timeout=timedelta(seconds=180),
         )
         items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
         results = []
@@ -814,7 +814,7 @@ def scrape_via_config(client, config_key: str, hours: int = 24,
     print(f"  ▶ {name} (Apify actor)...")
     try:
         run = client.actor(cfg["actor"]).call(
-            run_input=cfg["input"], timeout_secs=timeout_secs
+            run_input=cfg["input"], run_timeout=timedelta(seconds=timeout_secs)
         )
         items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
         field_map = cfg.get("field_map")  # None => item keys already match our schema
@@ -899,7 +899,7 @@ def scrape_myvisajobs(client) -> List[dict]:
                 """,
                 "maxRequestsPerCrawl": 6,
             },
-            timeout_secs=120,
+            run_timeout=timedelta(seconds=120),
         )
         items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
         results = []
