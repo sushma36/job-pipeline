@@ -640,7 +640,9 @@ def scrape_indeed(client, hours: int = 24) -> List[dict]:
             },
             run_timeout=timedelta(seconds=300),
         )
-        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        if run is None:
+            raise RuntimeError("Actor run returned None (run may have failed or been aborted)")
+        items = list(client.dataset(run.default_dataset_id).iterate_items())
         results = []
         raw = len(items)
         kept = skip_title = skip_loc = skip_age = 0
@@ -700,7 +702,9 @@ def scrape_linkedin(client, li_at_cookie: str = "", hours: int = 24) -> List[dic
             run_input={"urls": search_urls, "count": 50},
             run_timeout=timedelta(seconds=300),
         )
-        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        if run is None:
+            raise RuntimeError("Actor run returned None (run may have failed or been aborted)")
+        items = list(client.dataset(run.default_dataset_id).iterate_items())
         results = []
         raw = len(items)
         kept = skip_title = skip_loc = skip_age = 0
@@ -752,13 +756,15 @@ def scrape_builtin(client, hours: int = 24) -> List[dict]:
                 "searchQueries": ["data engineer", "analytics engineer"],
                 "location": "",
                 "remoteMode": "any",
-                "postedWithinDays": 1 if hours <= 24 else 3,
+                "postedWithinDays": "1" if hours <= 24 else "3",
                 "maxResultsPerQuery": 100,
                 "fetchDescription": True,
             },
             run_timeout=timedelta(seconds=180),
         )
-        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        if run is None:
+            raise RuntimeError("Actor run returned None (run may have failed or been aborted)")
+        items = list(client.dataset(run.default_dataset_id).iterate_items())
         results = []
         raw = len(items)
         kept = skip_title = skip_loc = skip_age = 0
@@ -816,7 +822,9 @@ def scrape_via_config(client, config_key: str, hours: int = 24,
         run = client.actor(cfg["actor"]).call(
             run_input=cfg["input"], run_timeout=timedelta(seconds=timeout_secs)
         )
-        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        if run is None:
+            raise RuntimeError("Actor run returned None (run may have failed or been aborted)")
+        items = list(client.dataset(run.default_dataset_id).iterate_items())
         field_map = cfg.get("field_map")  # None => item keys already match our schema
 
         results = []
@@ -901,7 +909,9 @@ def scrape_myvisajobs(client) -> List[dict]:
             },
             run_timeout=timedelta(seconds=120),
         )
-        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        if run is None:
+            raise RuntimeError("Actor run returned None (run may have failed or been aborted)")
+        items = list(client.dataset(run.default_dataset_id).iterate_items())
         results = []
         raw = len(items)
         kept = skip_title = 0
