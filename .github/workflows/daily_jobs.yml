@@ -36,7 +36,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install apify-client openpyxl pandas python-dateutil requests lxml beautifulsoup4
+          pip install "apify-client==3.0.5" openpyxl pandas python-dateutil requests lxml beautifulsoup4
 
       - name: Set run slot label
         run: |
