@@ -44,6 +44,21 @@ DOMAINS = [
 WEIGHTS = {"skills": 0.40, "tech": 0.25, "level": 0.15,
            "domain": 0.10, "education": 0.10}
 
+# Technologies that are NOT on the resume and were deliberately excluded
+# (can't defend them in an interview). If one of these is the job's PRIMARY
+# platform -- named in the title, or mentioned repeatedly through the JD --
+# the generic skill-keyword overlap (python/sql/data pipeline/etc., which
+# shows up in nearly every DE posting regardless of cloud) was masking that
+# mismatch entirely. A "Senior Azure Data Engineer" role could score 70+
+# on generic overlap alone with zero actual Azure experience behind it.
+DISQUALIFYING_STACKS = {
+    "azure":            "Azure",
+    "synapse":          "Azure Synapse",
+    "microsoft fabric": "Microsoft Fabric",
+    "snowflake":        "Snowflake",
+    "redshift":         "Redshift",
+}
+
 
 def _n(t: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", (t or "").lower())).strip()
@@ -105,6 +120,24 @@ def _score_edu(jd):
     return 0.85
 
 
+def _stack_mismatch(title: str, jd: str):
+    """Returns (penalty 0.0-0.40, warning label or None). Title mention is a
+    strong signal (the role IS that stack) -> heavy penalty. Repeated
+    mentions in the body without it being in the title is a softer signal
+    (could be one system among several) -> smaller penalty."""
+    title_n = _n(title)
+    body_n  = _n(jd or "")
+    penalty, hit = 0.0, None
+    for stack, label in DISQUALIFYING_STACKS.items():
+        if stack in title_n:
+            if 0.35 > penalty:
+                penalty, hit = 0.35, f"⚠️ {label}-PRIMARY ROLE (in title)"
+        elif body_n.count(stack) >= 3:
+            if 0.18 > penalty:
+                penalty, hit = 0.18, f"⚠️ {label} mentioned {body_n.count(stack)}x in JD"
+    return penalty, hit
+
+
 @dataclass
 class MatchResult:
     score:          int
@@ -124,21 +157,27 @@ def match_job(job: dict) -> MatchResult:
     sl = _score_level(title, jd)
     sd = _score_domain(combined)
     se = _score_edu(jd)
+    penalty, mismatch_warning = _stack_mismatch(title, jd)
 
-    score = round((ss * WEIGHTS["skills"]  +
-                   st * WEIGHTS["tech"]    +
-                   sl * WEIGHTS["level"]   +
-                   sd * WEIGHTS["domain"]  +
-                   se * WEIGHTS["education"]) * 100)
+    raw_score = (ss * WEIGHTS["skills"]  +
+                 st * WEIGHTS["tech"]    +
+                 sl * WEIGHTS["level"]   +
+                 sd * WEIGHTS["domain"]  +
+                 se * WEIGHTS["education"])
+    score = round(max(raw_score - penalty, 0) * 100)
 
     rec = ("✅ Apply"     if score >= 70 else
            "⚠️  Consider" if score >= 50 else
            "⛔ Skip")
 
+    missing_str = ", ".join(missing)
+    if mismatch_warning:
+        missing_str = f"{mismatch_warning}; {missing_str}" if missing_str else mismatch_warning
+
     return MatchResult(
         score          = score,
         matched_skills = ", ".join(sorted({m.lower() for m in matched[:20]})),
-        missing_skills = ", ".join(missing),
+        missing_skills = missing_str,
         recommendation = rec,
         breakdown      = {
             "skills(40%)":    round(ss * 100),
@@ -146,6 +185,7 @@ def match_job(job: dict) -> MatchResult:
             "level(15%)":     round(sl * 100),
             "domain(10%)":    round(sd * 100),
             "education(10%)": round(se * 100),
+            "stack_penalty":  f"-{round(penalty*100)}" if penalty else "0",
         },
     )
 

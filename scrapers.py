@@ -623,20 +623,18 @@ def scrape_indeed(client, hours: int = 24) -> List[dict]:
     name = "Indeed"
     print(f"  ▶ {name} (Apify actor)...")
     try:
+        # FIXED 2026-07-13: previous input used a nested "queries" array with
+        # "position" fields -- confirmed via Apify's own input-schema docs
+        # that the real schema is a FLAT structure with a single "keyword"
+        # string, not an array of query objects. The actor received a shape
+        # it didn't recognize and generated zero search requests (visible in
+        # the raw actor log: "Total 0 requests: 0 succeeded, 0 failed").
         run = client.actor("misceres/indeed-scraper").call(
             run_input={
-                "queries": [
-                    {"position": "Data Engineer",
-                     "country": "US", "location": "United States", "maxItems": 50},
-                    {"position": "Analytics Engineer",
-                     "country": "US", "location": "United States", "maxItems": 30},
-                    {"position": "ETL Engineer",
-                     "country": "US", "location": "United States", "maxItems": 25},
-                    {"position": "Data Platform Engineer",
-                     "country": "US", "location": "United States", "maxItems": 25},
-                ],
-                "maxItems":   130,
-                "timePosted": "last24hours",
+                "keyword":  "Data Engineer",
+                "country":  "US",
+                "location": "United States",
+                "maxItems": 100,
             },
             run_timeout=timedelta(seconds=300),
         )
@@ -741,6 +739,24 @@ def scrape_linkedin(client, li_at_cookie: str = "", hours: int = 24) -> List[dic
 # ===========================================================================
 # SCRAPER 9 — BUILT IN via Apify  (tech/startup-focused board, 24-hr filter)
 # ===========================================================================
+def _find_url(item: dict) -> str:
+    """Try known field names first, then fall back to scanning for any key
+    that looks like a URL field and whose value actually looks like a URL.
+    Exists because several Apify actors' real output field names for the
+    job link couldn't be confirmed without a live sample -- this adapts
+    instead of guessing once and silently failing forever."""
+    for key in ("url", "jobUrl", "link", "applyUrl", "detailUrl",
+                "job_url", "href", "postUrl", "sourceUrl"):
+        val = item.get(key)
+        if val:
+            return val
+    for k, v in item.items():
+        if isinstance(v, str) and v.startswith("http") and \
+           any(t in k.lower() for t in ("url", "link", "href")):
+            return v
+    return ""
+
+
 def scrape_builtin(client, hours: int = 24) -> List[dict]:
     name = "Built In"
     print(f"  ▶ {name} (Apify actor)...")
@@ -788,7 +804,7 @@ def scrape_builtin(client, hours: int = 24) -> List[dict]:
                 posted,
                 item.get("description", ""),
                 item.get("salary", ""),
-                item.get("url", ""),
+                _find_url(item),
                 name,
             ))
         print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
@@ -845,13 +861,14 @@ def scrape_via_config(client, config_key: str, hours: int = 24,
                 skip_age += 1
                 continue
             kept += 1
+            job_url = mapped.get("job_url", "") or _find_url(item)
             results.append(_job(
                 title, mapped.get("company_name", ""),
                 loc, mapped.get("remote_or_hybrid", ""),
                 mapped.get("posting_date", ""),
                 mapped.get("job_description", ""),
                 mapped.get("salary", ""),
-                mapped.get("job_url", ""),
+                job_url,
                 name,
             ))
         print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
