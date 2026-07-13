@@ -136,8 +136,8 @@ _DISQUALIFY = [
     "computer vision", "nlp engineer",
 ]
 
-def _title_ok(title: str) -> bool:
-    t = title.lower()
+def _title_ok(title) -> bool:
+    t = _safe_str(title).lower()
     return (any(kw in t for kw in _DE_TITLES) and
             not any(dq in t for dq in _DISQUALIFY))
 
@@ -176,7 +176,8 @@ _CITIES = [
     "san antonio","fort worth","tucson","fresno","sacramento",
 ]
 
-def _loc_ok(location: str) -> bool:
+def _loc_ok(location) -> bool:
+    location = _safe_str(location)
     if not location or not location.strip():
         return True          # blank = remote / not specified → keep
     loc = location.lower().strip()
@@ -196,17 +197,31 @@ def _loc_ok(location: str) -> bool:
 # ---------------------------------------------------------------------------
 # Job dict factory
 # ---------------------------------------------------------------------------
+def _safe_str(v) -> str:
+    """Coerce any value to a safe string. Exists because some Apify actors
+    return booleans for fields we treat as text (e.g. Wellfound's 'remote'
+    field is a real Python bool, not a string) -- (v or "").strip() crashes
+    on True specifically, since True is truthy so 'or' returns the bool
+    itself, not the fallback empty string. Confirmed via the exact runtime
+    error: 'bool' object has no attribute 'strip'."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "Remote" if v else ""
+    return str(v)
+
+
 def _job(title, company, location, remote, date_raw,
          description, salary, url, platform):
     return {
-        "job_title":        (title       or "").strip(),
-        "company_name":     (company     or "").strip(),
-        "location":         (location    or "").strip(),
-        "remote_or_hybrid": (remote      or "").strip(),
+        "job_title":        _safe_str(title).strip(),
+        "company_name":     _safe_str(company).strip(),
+        "location":         _safe_str(location).strip(),
+        "remote_or_hybrid": _safe_str(remote).strip(),
         "posting_date":     fmt_date(date_raw),
-        "job_description":  (description or "").strip(),
-        "salary":           (salary      or "").strip(),
-        "job_url":          (url         or "").strip(),
+        "job_description":  _safe_str(description).strip(),
+        "salary":           _safe_str(salary).strip(),
+        "job_url":          _safe_str(url).strip(),
         "platform_name":    platform,
     }
 
@@ -623,15 +638,16 @@ def scrape_indeed(client, hours: int = 24) -> List[dict]:
     name = "Indeed"
     print(f"  ▶ {name} (Apify actor)...")
     try:
-        # FIXED 2026-07-13: previous input used a nested "queries" array with
-        # "position" fields -- confirmed via Apify's own input-schema docs
-        # that the real schema is a FLAT structure with a single "keyword"
-        # string, not an array of query objects. The actor received a shape
-        # it didn't recognize and generated zero search requests (visible in
-        # the raw actor log: "Total 0 requests: 0 succeeded, 0 failed").
+        # FIXED 2026-07-13 (again): the "keyword" field name came from Apify's
+        # docs page, but the actual runtime log proved that's wrong too --
+        # "Running site crawl country US, position undefined, location
+        # United States" shows the actor checking for a field literally
+        # named "position" at the top level, not "keyword". Docs vs. real
+        # deployed behavior mismatch, same pattern as the run_timeout/
+        # timeout_secs issue earlier. Trusting the runtime log over the docs.
         run = client.actor("misceres/indeed-scraper").call(
             run_input={
-                "keyword":  "Data Engineer",
+                "position": "Data Engineer",
                 "country":  "US",
                 "location": "United States",
                 "maxItems": 100,
@@ -900,6 +916,8 @@ def scrape_myvisajobs(client) -> List[dict]:
                     async function pageFunction(context) {
                         const { $ } = context;
                         const jobs = [];
+
+                        // Strategy 1: table rows (original guess)
                         $('table tr').each((i, row) => {
                             const cells = $(row).find('td');
                             if (cells.length < 2) return;
@@ -919,6 +937,32 @@ def scrape_myvisajobs(client) -> List[dict]:
                                 platform_name:   'MyVisaJobs'
                             });
                         });
+
+                        // Strategy 2 (fallback): the table-row selector was a guess
+                        // that returned zero results on a real run (confirmed:
+                        // crawl succeeded, 0 items extracted) -- if the site
+                        // isn't table-based, fall back to matching job-detail
+                        // links by URL pattern instead of guessing CSS classes.
+                        if (jobs.length === 0) {
+                            $('a[href*="Job-"], a[href*="/Job/"], a[href*="JobId"]').each((i, el) => {
+                                const title = $(el).text().trim();
+                                if (!title || title.length < 5) return;
+                                const href = $(el).attr('href') || '';
+                                const card = $(el).closest('div, li, tr, article');
+                                jobs.push({
+                                    job_title:       title,
+                                    company_name:    card.find('[class*="company" i]').first().text().trim(),
+                                    location:        card.find('[class*="location" i]').first().text().trim() || 'United States',
+                                    posting_date:    '',
+                                    remote_or_hybrid:'',
+                                    salary:          '',
+                                    job_description: 'H1B Visa Sponsorship Available',
+                                    job_url: href.startsWith('http') ? href : 'https://www.myvisajobs.com' + href,
+                                    platform_name:   'MyVisaJobs'
+                                });
+                            });
+                        }
+
                         return jobs;
                     }
                 """,
