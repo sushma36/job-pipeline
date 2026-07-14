@@ -17,6 +17,7 @@ import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
+from bs4 import BeautifulSoup
 
 from dedup_utils import dedupe_jobs
 from apify_config import PLATFORM_CONFIGS
@@ -692,64 +693,83 @@ def scrape_indeed(client, hours: int = 24) -> List[dict]:
 # ===========================================================================
 # SCRAPER 8 — LINKEDIN via Apify  (24-hr filter; needs LINKEDIN_COOKIE)
 # ===========================================================================
-def scrape_linkedin(client, li_at_cookie: str = "", hours: int = 24) -> List[dict]:
-    # FIXED 2026-07-06: the actor curious_coder/linkedin-jobs-scraper is real,
-    # but the previous input (searchQueries/cookie/postedAt fields) does not
-    # match its actual schema at all. This actor scrapes LinkedIn's PUBLIC job
-    # search and takes pre-built LinkedIn search URLs as input -- it doesn't
-    # even use a cookie (that's a different, paid actor:
-    # curious_coder/linkedin-jobs-search-scraper, $30/mo, for boolean search).
-    # li_at_cookie is accepted for interface compatibility with run_pipeline.py
-    # but currently unused by this actor -- kept as a param in case we switch
-    # to the advanced/paid actor later.
+def scrape_linkedin(client=None, li_at_cookie: str = "", hours: int = 24) -> List[dict]:
+    # REWRITTEN 2026-07-14: dropped Apify entirely. LinkedIn exposes a public,
+    # unauthenticated "guest" endpoint that serves the same job-card HTML
+    # shown to logged-out visitors -- no login, no cookie, no Apify actor,
+    # no cost. Confirmed against five independent sources describing the
+    # same endpoint/params/CSS classes. client/li_at_cookie kept as unused
+    # params so run_all_scrapers doesn't need to change its call site.
     name = "LinkedIn"
-    print(f"  ▶ {name} (Apify actor)...")
-    date_filter = "r86400" if hours <= 24 else "r259200"  # seconds: 24h vs 72h
-    search_urls = [
-        f"https://www.linkedin.com/jobs/search/?keywords={kw.replace(' ', '%20')}"
-        f"&location=United%20States&f_TPR={date_filter}&f_WT=2"  # f_WT=2 = remote
-        for kw in ("Data Engineer", "Senior Data Engineer",
-                   "Analytics Engineer", "ETL Engineer")
-    ]
-    try:
-        run = client.actor("curious_coder/linkedin-jobs-scraper").call(
-            run_input={"urls": search_urls, "count": 50},
-            run_timeout=timedelta(seconds=300),
-        )
-        if run is None:
-            raise RuntimeError("Actor run returned None (run may have failed or been aborted)")
-        items = list(client.dataset(run.default_dataset_id).iterate_items())
-        results = []
-        raw = len(items)
-        kept = skip_title = skip_loc = skip_age = 0
-        for item in items:
-            title = item.get("title", "")
+    print(f"  ▶ {name} (direct, no Apify)...")
+    date_filter = "r86400" if hours <= 24 else "r259200"
+    keywords = ("Data Engineer", "Senior Data Engineer",
+                "Analytics Engineer", "ETL Engineer")
+    results = []
+    raw = kept = skip_title = skip_loc = skip_age = 0
+
+    for kw in keywords:
+        # Only the first page (0-24) per keyword -- enough volume without
+        # pushing rate limits; LinkedIn throttles unauthenticated IPs hard
+        # past a handful of requests.
+        params = {
+            "keywords": kw,
+            "location": "United States",
+            "f_TPR": date_filter,
+            "start": 0,
+        }
+        r = _get("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search",
+                  timeout=15, params=params)
+        if not r:
+            continue
+        try:
+            soup = BeautifulSoup(r.text, "html.parser")
+        except Exception:
+            continue
+
+        cards = soup.find_all("div", class_="base-card")
+        if not cards:
+            cards = soup.find_all("li")  # fallback shape seen in some responses
+
+        for card in cards:
+            raw += 1
+            title_el = card.find("h3", class_="base-search-card__title")
+            title = title_el.get_text(strip=True) if title_el else ""
             if not _title_ok(title):
                 skip_title += 1
                 continue
-            loc = item.get("location", "")
+
+            loc_el = card.find("span", class_="job-search-card__location")
+            loc = loc_el.get_text(strip=True) if loc_el else ""
             if not _loc_ok(loc):
                 skip_loc += 1
                 continue
-            if not is_within_hours(item.get("postedAt", "") or item.get("listedAt", ""), hours):
+
+            time_el = card.find("time")
+            date_raw = time_el.get("datetime", "") if time_el else ""
+            if not is_within_hours(date_raw, hours):
                 skip_age += 1
                 continue
+
+            company_el = card.find("h4", class_="base-search-card__subtitle")
+            link_el = card.find("a", class_="base-card__full-link") or card.find("a", href=True)
+
             kept += 1
             results.append(_job(
-                title, item.get("company", "") or item.get("companyName", ""),
-                loc, item.get("workplaceType", ""),
-                item.get("postedAt", "") or item.get("listedAt", ""),
-                item.get("description", "") or item.get("descriptionText", ""),
-                item.get("salary", ""),
-                item.get("link", "") or item.get("jobUrl", ""),
+                title,
+                company_el.get_text(strip=True) if company_el else "",
+                loc, "",
+                date_raw,
+                "",  # guest endpoint doesn't include full description in the card
+                "",
+                (link_el.get("href", "").split("?")[0] if link_el else ""),
                 name,
             ))
-        print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
-              f"skip_title={skip_title:4d} | skip_loc={skip_loc:3d} | skip_age={skip_age:3d}")
-        return results
-    except Exception as e:
-        print(f"    {name:22s} | ⚠️  FAILED: {e}")
-        return []
+        time.sleep(1.5)  # be polite between keyword queries
+
+    print(f"    {name:22s} | raw={raw:4d} | kept={kept:3d} | "
+          f"skip_title={skip_title:4d} | skip_loc={skip_loc:3d} | skip_age={skip_age:3d}")
+    return results
 
 
 # ===========================================================================
@@ -1045,11 +1065,16 @@ def run_all_scrapers(apify_client, hours: int = 24, linkedin_cookie: str = "") -
     all_jobs += _track("Remotive", lambda: scrape_remotive(hours))
     all_jobs += _track("Jobicy", lambda: scrape_jobicy(hours))
 
-    # Apify actors — 24-hr filter
+    # LinkedIn — direct scrape of the public guest API, no Apify, no cost.
+    # Runs regardless of Apify account status.
+    all_jobs += _track("LinkedIn", lambda: scrape_linkedin(None, linkedin_cookie, hours))
+
+    # Apify actors — 24-hr filter. If the Apify account is over its usage
+    # limit, these will all fail gracefully (caught by _track) and just show
+    # up as zero in the source-health banner -- doesn't block anything above.
     if apify_client:
         all_jobs += _track("Indeed", lambda: scrape_indeed(apify_client, hours))
         all_jobs += _track("MyVisaJobs", lambda: scrape_myvisajobs(apify_client))
-        all_jobs += _track("LinkedIn", lambda: scrape_linkedin(apify_client, linkedin_cookie, hours))
         all_jobs += _track("Built In", lambda: scrape_builtin(apify_client, hours))
 
         # Previously configured but never wired in
